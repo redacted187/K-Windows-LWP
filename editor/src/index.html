@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0e0f11">
+<title>KLWP Desktop Editor</title>
+<style>/*CSS*/</style></head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol>
+  <symbol id="i-undo" viewBox="0 0 24 24"><path d="M9 14 4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 0 12h-3"/></symbol>
+  <symbol id="i-redo" viewBox="0 0 24 24"><path d="m15 14 5-5-5-5"/><path d="M20 9H10a6 6 0 0 0 0 12h3"/></symbol>
+  <symbol id="i-sim" viewBox="0 0 24 24"><rect x="7" y="2.5" width="10" height="19" rx="2.5"/><path d="M11 18.5h2"/></symbol>
+  <symbol id="i-export" viewBox="0 0 24 24"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 20h14"/></symbol>
+  <symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></symbol>
+  <symbol id="i-play" viewBox="0 0 24 24"><path d="M7 4.5v15l12-7.5z"/></symbol>
+  <symbol id="i-touch" viewBox="0 0 24 24"><path d="M9 11V5.5a1.5 1.5 0 0 1 3 0V11"/><path d="M12 10.5V9a1.5 1.5 0 0 1 3 0v2"/><path d="M15 11v-.5a1.5 1.5 0 0 1 3 0V15a6 6 0 0 1-6 6h-.6a6 6 0 0 1-4.9-2.5L4 14.5a1.5 1.5 0 0 1 2.4-1.8L9 15"/></symbol>
+  <symbol id="i-reset" viewBox="0 0 24 24"><path d="M4 12a8 8 0 1 0 2.6-5.9"/><path d="M4 4v4.5h4.5"/></symbol>
+  <symbol id="i-compare" viewBox="0 0 24 24"><rect x="3" y="4" width="8" height="16" rx="2"/><rect x="13" y="7" width="8" height="13" rx="2"/></symbol>
+  <symbol id="i-full" viewBox="0 0 24 24"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></symbol>
+  <symbol id="i-close" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></symbol>
+</defs></svg>
+
+<header class="appbar">
+  <div class="menuwrap">
+    <button class="icb" id="menu" title="File menu" aria-haspopup="true"><svg><use href="#i-menu"/></svg></button>
+    <div class="pop" id="filemenu" hidden>
+      <button id="new">New wallpaper</button>
+      <button id="open">Open…<kbd>Ctrl O</kbd></button>
+      <button id="lib" title="Point at your Kustom folder so its fonts, icon sets and images can be used">Kustom folder…</button>
+      <hr>
+      <button id="info">Preset info…</button>
+      <button id="export2">Export .klwp<kbd>Ctrl S</kbd></button>
+    </div>
+  </div>
+  <button class="ttl" id="ttl" title="Preset info"><span id="ptitle"></span><small id="fname"></small></button>
+  <span class="sp"></span>
+  <button class="icb" id="undo" title="Undo (Ctrl+Z)"><svg><use href="#i-undo"/></svg></button>
+  <button class="icb" id="redo" title="Redo (Ctrl+Y)"><svg><use href="#i-redo"/></svg></button>
+  <button class="icb lbl" id="sim" title="Simulated device data: battery, weather, music, notifications…"><svg><use href="#i-sim"/></svg><span>Device data</span></button>
+  <button class="icb lbl pri" id="export" title="Save as a .klwp file (Ctrl+S)"><svg><use href="#i-export"/></svg><span>Export</span></button>
+  <input type="file" id="file" accept=".klwp,.komp,.kwgt,.klck,.kntf,.zip" hidden><input type="file" id="dir" webkitdirectory multiple hidden>
+</header>
+
+<main>
+  <section id="preview">
+    <div id="stage"></div>
+    <div class="pvbar">
+      <div class="seg" title="Number of home screens">
+        <button id="scrdec" aria-label="Fewer screens">−</button><input type="number" id="screens" min="1" max="9" value="3" aria-label="Screens"><button id="scrinc" aria-label="More screens">+</button>
+      </div>
+      <input type="range" id="scroll" min="0" max="2" step="0.01" value="1" title="Scroll between screens" aria-label="Scroll">
+      <span id="scrollv"></span>
+      <span class="sp"></span>
+      <button class="icb" id="lock" title="Preview the locked state"><svg><use href="#i-lock"/></svg></button>
+      <button class="icb" id="play" title="Run animations"><svg><use href="#i-play"/></svg></button>
+      <button class="icb" id="touch" title="Touch mode: swipe between screens and tap items like on the phone"><svg><use href="#i-touch"/></svg></button>
+      <button class="icb" id="resetg" title="Put globals changed by touch actions back to their saved values"><svg><use href="#i-reset"/></svg></button>
+      <i class="vr"></i>
+      <button class="icb" id="addview" title="Compare another device side by side"><svg><use href="#i-compare"/></svg></button>
+      <button class="icb" id="fs" title="Fullscreen preview (touch mode)"><svg><use href="#i-full"/></svg></button>
+    </div>
+    <span id="status"></span>
+    <button class="icb" id="fsexit" title="Leave fullscreen (Esc)"><svg><use href="#i-close"/></svg></button>
+  </section>
+  <section id="editor"></section>
+</main>
+<div id="toast"></div>
+<script>/*JSZIP*/</script>
+<script>/*LABELS*/</script>
+<script>/*FORMULA*/</script>
+<script>/*SCHEMA*/</script>
+<script>/*RENDER*/</script>
+<script>/*APP*/</script>
+</body></html>
