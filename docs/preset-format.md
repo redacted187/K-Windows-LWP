@@ -16,6 +16,14 @@ A `.klwp` file is a zip. KLWP writes entries with the preset first:
 
 There are no directory entries. The editor writes the same layout and the same zip header fields as KLWP's own files (version 2.0, data descriptors, UTF-8 flag).
 
+### What the editor adds
+
+- `kwlwp.json`, only when a theme has editor settings: `{"kwlwp":1, "view":{"name","w","h","desk"}, "deskScale":60}`.
+  KLWP opens entries by name (`preset.json`, `fonts/...`), so it never reads this one, and it is not written back
+  when the phone saves the theme.
+- `"kwlwp_noselect": true` on an item that should be click-through in the editor's preview. KLWP's settings writer
+  drops keys it has no spec for ("Purging non existing key"), so this also disappears harmlessly after a phone save.
+
 ## preset.json
 
 ```json
@@ -44,6 +52,13 @@ Groups hold their children in `viewgroup_items`. Animations are in `internal_ani
 | `0` or absent | A plain value | The property itself |
 | `10` | A formula | `internal_formulas[key]` |
 | `100` | Bound to a global | `internal_globals[key]` |
+
+Formula syntax follows KLWP 3.82's evaluator (`org.kustom.lib.parser`, built on javaluator): operators `&` `|`
+(lowest, same level), `=` `!=` `<` `<=` `>` `>=` `~=`, `+` `-`, `*` `/` `%`, `^`, then unary minus; `/* comments */`
+inside `$...$`; and only the 33 registered functions, each with a fixed argument range (for example `df` 1-2,
+`tc` 2-4, `if` 2-99). A block that cannot be parsed gives an empty string and an error such as
+`err: parentheses mismatched`; a function that fails gives an empty string and `<name>: <message>` while the rest
+of the expression still runs.
 
 Globals live in `globals_list` on the root or on a komponent. Types: `TEXT`, `NUMBER`, `COLOR`, `SWITCH`, `LIST`, `BITMAP`, `FONT`, `FOLDER`. A global can itself be a formula (`toggles: 10` with `global_formula`) or point at another global (`toggles: 100` with `global`).
 

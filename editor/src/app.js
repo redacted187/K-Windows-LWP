@@ -48,6 +48,43 @@
     ProgressModule: 'Pr'
   };
 
+  // little pictures for item types and global types (24x24, drawn with the current colour)
+  const TYPE_SVG = {
+    RootLayerModule: '<rect x="7" y="3" width="10" height="18" rx="2"/><path d="M11 18h2"/>',
+    OverlapLayerModule:
+      '<rect x="3.5" y="3.5" width="11" height="11" rx="1.5"/><rect x="9.5" y="9.5" width="11" height="11" rx="1.5"/>',
+    StackLayerModule:
+      '<rect x="4" y="3.5" width="16" height="4.5" rx="1"/><rect x="4" y="9.75" width="16" height="4.5" rx="1"/><rect x="4" y="16" width="16" height="4.5" rx="1"/>',
+    KomponentModule: '<path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M4 7.5l8 4.5 8-4.5M12 12v9"/>',
+    TextModule: '<path d="M5 7V4.5h14V7M12 4.5v15M9 19.5h6"/>',
+    CurvedTextModule: '<path d="M4 17a9 9 0 0 1 16 0"/><path d="M9 7h6M12 7v8"/>',
+    MorphingTextModule: '<path d="M4 7V5h9v2M8.5 5v13M6.5 18h4"/><path d="M14 12l3 7 3-7"/>',
+    ShapeModule: '<rect x="3.5" y="10" width="9.5" height="9.5" rx="1.5"/><circle cx="15.5" cy="8.5" r="5"/>',
+    BitmapModule:
+      '<rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="8.5" cy="10" r="1.7"/><path d="M21 16l-5-5-9 8"/>',
+    MovieModule: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M10 9.2v5.6l4.8-2.8z"/>',
+    FontIconModule: '<path d="M12 3.5l2.5 5.3 5.8.7-4.3 3.9 1.2 5.7L12 16.3l-5.2 2.8L8 13.4 3.7 9.5l5.8-.7z"/>',
+    ProgressModule: '<rect x="3" y="9.5" width="18" height="5" rx="2.5"/><path d="M5.5 12h7" stroke-width="3"/>',
+    SeriesModule: '<path d="M4 7h3M4 12h3M4 17h3M10 7h10M10 12h10M10 17h10"/>',
+    TEXT: '<path d="M5 7V4.5h14V7M12 4.5v15M9 19.5h6"/>',
+    NUMBER: '<path d="M9.5 4L7.5 20M16.5 4l-2 16M4.5 9h16M3.5 15h16"/>',
+    SWITCH:
+      '<rect x="2.5" y="7.5" width="19" height="9" rx="4.5"/><circle cx="16.5" cy="12" r="2.6" fill="currentColor"/>',
+    LIST: '<path d="M9 7h11M9 12h11M9 17h11"/><circle cx="5" cy="7" r="1" fill="currentColor"/><circle cx="5" cy="12" r="1" fill="currentColor"/><circle cx="5" cy="17" r="1" fill="currentColor"/>',
+    BITMAP:
+      '<rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="8.5" cy="10" r="1.7"/><path d="M21 16l-5-5-9 8"/>',
+    FONT: '<path d="M6 20L12 4l6 16M8.4 14h7.2"/>',
+    FOLDER: '<path d="M3 7.5A2 2 0 0 1 5 5.5h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>'
+  };
+  const typeSvg = k => '<svg viewBox="0 0 24 24">' + (TYPE_SVG[k] || '<circle cx="12" cy="12" r="7"/>') + '</svg>';
+  // the type chip of an item: its picture, its short name as a tooltip
+  const typeChip = (t, big) =>
+    h('span', {
+      class: 'chip-t' + (big ? ' big' : '') + ' t-' + (TYPE_CHIP[t] || 'x'),
+      title: (SC.MODULES[t] && SC.MODULES[t].name) || pretty(String(t).replace(/Module$/, '')),
+      html: typeSvg(t)
+    });
+
   // wallpaper mode: the desktop-wallpaper host loads this same page with ?wallpaper=1 and gets nothing but the live, touchable wallpaper
   const WALL = /[?&]wallpaper=1/.test(location.search),
     hostMsg = m => {
@@ -81,6 +118,9 @@
     fileName: 'Untitled.klwp',
     pretty: false,
     sim: JSON.parse(JSON.stringify(F.DEFAULT_SIM)),
+    live: KLive.liveDefaults(F.DEFAULT_SIM),
+    // the editor starts on simulated data; the wallpaper on real data unless the tray menu asks for simulated
+    useSim: !/[?&]wallpaper=1/.test(location.search) || /[?&]usesim=1/.test(location.search),
     path: [],
     tab: null,
     checked: new Set(),
@@ -95,7 +135,10 @@
     scroll: 1,
     locked: false,
     play: true,
-    touch: false,
+    touch: true,
+    snap: true,
+    meta: {},
+    monitors: [],
     panel: 'edit',
     simTab: 'Time',
     t0: performance.now(),
@@ -113,6 +156,93 @@
     ['Tablet 4:3', 1536, 2048],
     ['Square 1:1', 1440, 1440]
   ];
+  const DESKTOPS = [
+    ['Desktop 1920×1080', 1920, 1080],
+    ['Desktop 2560×1440', 2560, 1440],
+    ['Desktop 3440×1440', 3440, 1440],
+    ['Desktop 3840×2160', 3840, 2160]
+  ];
+  // this PC's monitors: the Windows app passes them in the address ("mon=2560x1440p,1920x1080"), a browser knows its own
+  function readMonitors() {
+    const q = /[?&]mon=([^&]+)/.exec(location.search),
+      out = [];
+    if (q)
+      decodeURIComponent(q[1])
+        .split(',')
+        .forEach((x, i) => {
+          const m = /^(\d+)x(\d+)(p?)$/.exec(x);
+          if (m) out.push(['Monitor ' + (i + 1) + (m[3] ? ' (main)' : '') + '  ' + m[1] + '×' + m[2], +m[1], +m[2]]);
+        });
+    if (!out.length) {
+      const d = window.devicePixelRatio || 1;
+      out.push([
+        'This screen  ' + Math.round(screen.width * d) + '×' + Math.round(screen.height * d),
+        Math.round(screen.width * d),
+        Math.round(screen.height * d)
+      ]);
+    }
+    return out;
+  }
+  async function detectMonitors() {
+    try {
+      const sd = await window.getScreenDetails();
+      S.monitors = sd.screens.map((x, i) => {
+        const d = x.devicePixelRatio || 1,
+          w = Math.round(x.width * d),
+          hh = Math.round(x.height * d);
+        return ['Monitor ' + (i + 1) + (x.isPrimary ? ' (main)' : '') + '  ' + w + '×' + hh, w, hh];
+      });
+      toast(S.monitors.length + ' monitor(s) found');
+    } catch (e) {
+      toast('The browser did not share the monitor list');
+    }
+    layoutViews();
+  }
+  // Editor-only settings for a theme (default preview size, desktop scale). They travel inside the .klwp as an extra
+  // "kwlwp.json" entry, which KLWP never reads: the phone loads the preset as usual and simply leaves the entry out
+  // when it saves. A copy is also kept on this computer, keyed by the preset's id, so a phone re-save loses nothing here.
+  const META_FILE = 'kwlwp.json';
+  const metaKey = () => {
+    const i = (S.preset && S.preset.preset_info) || {};
+    return 'kwlwp-meta:' + (i.id || i.title || 'untitled');
+  };
+  function readMeta() {
+    let m = null;
+    try {
+      if (S.files.has(META_FILE)) m = JSON.parse(new TextDecoder().decode(S.files.get(META_FILE)));
+    } catch (e) {
+      m = null;
+    }
+    if (!m)
+      try {
+        m = JSON.parse(localStorage.getItem(metaKey()) || 'null');
+      } catch (e) {
+        m = null;
+      }
+    return m && typeof m === 'object' ? m : {};
+  }
+  function saveMeta(dirty) {
+    try {
+      localStorage.setItem(metaKey(), JSON.stringify(S.meta));
+    } catch (e) {
+      /* private mode */
+    }
+    if (dirty) {
+      S.dirty = true;
+      updateBar();
+    }
+  }
+  const deskScale = () => Math.max(0.1, Math.min(4, (+S.meta.deskScale || 100) / 100));
+  function applyMeta() {
+    const mv = S.meta.view;
+    if (!WALL && mv && mv.w > 0 && mv.h > 0) {
+      const v = S.views[0];
+      v.name = mv.name || 'Custom';
+      v.w = Math.round(mv.w);
+      v.h = Math.round(mv.h);
+      v.desk = !!mv.desk;
+    }
+  }
 
   function newPreset() {
     return {
@@ -205,12 +335,68 @@
   }
 
   // ------------------------------------------------------------------ assets
+  // KLWP's built-in default font and icon set (src/builtin.js), decoded on first use
+  const builtinCache = new Map();
+  function builtinBytes(name) {
+    if (builtinCache.has(name)) return builtinCache.get(name);
+    const B = window.KBuiltin || {},
+      b64 = name === 'roboto' ? B.roboto : name === 'materialfont' ? B.materialFont : null;
+    let out = null;
+    if (b64) {
+      const bin = atob(b64);
+      out = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+    }
+    builtinCache.set(name, out);
+    return out;
+  }
+  // an animated GIF, decoded into frames with the browser's ImageDecoder. Big GIFs are kept at most 720 px wide
+  // (the preview never needs more) so a long animation does not eat the memory.
+  async function decodeGif(rec, bytes) {
+    if (!window.ImageDecoder) return;
+    try {
+      const dec = new ImageDecoder({ data: bytes, type: 'image/gif' });
+      await dec.tracks.ready;
+      const n = dec.tracks.selectedTrack.frameCount,
+        frames = [];
+      let total = 0,
+        px = 0;
+      for (let i = 0; i < n; i++) {
+        const { image } = await dec.decode({ frameIndex: i });
+        const w = image.displayWidth,
+          hh = image.displayHeight,
+          k = Math.min(1, 720 / Math.max(1, w));
+        const bm = await createImageBitmap(image, {
+          resizeWidth: Math.max(1, Math.round(w * k)),
+          resizeHeight: Math.max(1, Math.round(hh * k))
+        });
+        // GIF delays: browsers (and Android) treat 0 and 10 ms as 100 ms
+        let dur = (image.duration || 0) / 1000;
+        if (dur <= 10) dur = 100;
+        image.close();
+        frames.push({ bm, dur });
+        total += dur;
+        px += bm.width * bm.height;
+        if (i === 0) rec.img = bm;
+        if (px > 120e6) break; // ~480 MB of frames is plenty
+      }
+      dec.close();
+      if (frames.length > 1) {
+        rec.anim = { frames, total };
+        requestRender();
+      }
+    } catch (e) {
+      /* stays a still image */
+    }
+  }
+  const webWaits = new Map();
   const A = {
     images: new Map(),
     fonts: new Map(),
     sets: new Map(),
     bytes(uri) {
       if (!uri || typeof uri !== 'string') return null;
+      if (uri.indexOf('builtin:') === 0) return builtinBytes(uri.slice(8));
       let p = uri.indexOf(KF) === 0 ? uri.slice(KF.length) : uri.replace(/^kfile:\/\/[^/]+\//, '');
       try {
         p = decodeURIComponent(p);
@@ -220,7 +406,12 @@
       const hit = S.files.get(p) || S.library.get(p) || S.files.get(uri);
       if (hit) return hit;
       const dev = A.devPath(uri);
-      return dev !== null ? S.library.get(dev) || null : null;
+      const d = dev !== null ? S.library.get(dev) || null : null;
+      if (d) return d;
+      // a path inside another preset ("wallpapers/x.klwp/icons/a.ttf") or another storage
+      // ("org.kustom.sdcard.000/fonts/a.ttf"): KLWP bundles the file into this preset when it saves, under its own folder
+      const m = /(?:^|\/)(fonts|icons|bitmaps)\/([^/]+)$/.exec(p);
+      return m ? S.files.get(m[1] + '/' + m[2]) || S.library.get(m[1] + '/' + m[2]) || null : null;
     },
     // a phone path such as /sdcard/Kustom/x or file:///storage/emulated/0/Kustom/x -> path inside the loaded Kustom folder
     devPath(u) {
@@ -256,11 +447,72 @@
           out.push('/storage/emulated/0/Kustom/' + n);
       return out.sort();
     },
-    image(uri) {
+    // t: the moment (ms) of an animated image to show; leave it out for the first frame
+    // bp(): the palette of a picture (computed once per picture)
+    palette(mode, uri) {
+      const img = A.image(uri);
+      if (!img) return null;
+      let pal = A.palettes.get(img);
+      if (!pal) {
+        try {
+          pal = KLive.palette(img);
+        } catch (e) {
+          pal = {};
+        }
+        A.palettes.set(img, pal);
+      }
+      return KLive.swatchColor(pal, mode);
+    },
+    palettes: new WeakMap(),
+    // wg(): what a web address returns, refreshed every 15 minutes. The Windows app downloads it (no browser
+    // cross-site limits); in a browser the site has to allow it. '' while it is on its way.
+    web: new Map(),
+    webGet(url, type, args) {
+      if (!/^https?:\/\//i.test(url)) return undefined;
+      let e = A.web.get(url);
+      const now = Date.now();
+      if (!e || (!e.busy && now - e.t > 15 * 60000)) {
+        e = e || { text: null, t: 0, busy: false };
+        e.busy = true;
+        e.t = now;
+        A.web.set(url, e);
+        const done = txt => {
+          e.busy = false;
+          if (txt !== null) e.text = txt;
+          requestRender();
+        };
+        if (HOST) {
+          const id = 'w' + Math.random().toString(36).slice(2);
+          webWaits.set(id, done);
+          hostMsg('wg:' + id + '|' + url);
+        } else
+          fetch(url)
+            .then(r => (r.ok ? r.text() : null))
+            .then(done)
+            .catch(() => done(null));
+      }
+      return e.text === null ? '' : KLive.webValue(e.text, type, args);
+    },
+    animated(uri) {
+      const c = A.images.get(String(uri || ''));
+      return !!(c && c.anim && c.anim.frames.length > 1);
+    },
+    image(uri, t) {
       if (!uri) return null;
       uri = String(uri);
       const c = A.images.get(uri);
-      if (c) return c.img;
+      if (c) {
+        if (c.anim && t !== undefined) {
+          const a = c.anim;
+          let x = ((t % a.total) + a.total) % a.total;
+          for (let i = 0; i < a.frames.length; i++) {
+            if (x < a.frames[i].dur) return a.frames[i].bm;
+            x -= a.frames[i].dur;
+          }
+          return a.frames[a.frames.length - 1].bm;
+        }
+        return c.img;
+      }
       const rec = { img: null };
       A.images.set(uri, rec);
       if (uri.indexOf('sim:') === 0) {
@@ -278,9 +530,10 @@
       }
       const b = A.bytes(uri);
       if (!b) return null;
+      if (b[0] === 0x47 && b[1] === 0x49 && b[2] === 0x46) decodeGif(rec, b);
       createImageBitmap(new Blob([b]))
         .then(bm => {
-          rec.img = bm;
+          rec.img = rec.img || bm;
           requestRender();
         })
         .catch(() => {
@@ -294,7 +547,7 @@
       return null;
     },
     font(uri) {
-      if (!uri) return null;
+      if (!uri) uri = 'builtin:roboto'; // KLWP's default font
       const c = A.fonts.get(uri);
       if (c) return c.ready ? c.family : null;
       const b = A.bytes(uri);
@@ -316,7 +569,49 @@
       }
       return null;
     },
+    // an Iconify icon (icon set "iconify://ic?name=..."): KLWP keeps the SVG gzipped and base64'd after a '#'
+    // in the icon name ("baseline-fast-rewind#H4sI..."), and downloads it from api.iconify.design otherwise
+    svgIcon(setUri, name) {
+      const key = setUri + '|' + name;
+      const c = A.images.get(key);
+      if (c) return c.img;
+      const rec = { img: null };
+      A.images.set(key, rec);
+      const hash = name.indexOf('#'),
+        id = (hash >= 0 ? name.slice(0, hash) : name).trim(),
+        data = hash >= 0 ? name.slice(hash + 1).trim() : '';
+      const done = txt => {
+        if (!/<svg/i.test(txt)) return;
+        const im = new Image();
+        im.onload = () => {
+          rec.img = im;
+          requestRender();
+        };
+        im.src = URL.createObjectURL(new Blob([txt], { type: 'image/svg+xml' }));
+      };
+      (async () => {
+        try {
+          if (data) {
+            const bin = atob(data),
+              u8 = new Uint8Array(bin.length);
+            for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+            if (u8[0] === 0x1f && u8[1] === 0x8b) {
+              const st = new Blob([u8]).stream().pipeThrough(new DecompressionStream('gzip'));
+              done(await new Response(st).text());
+            } else done(new TextDecoder().decode(u8));
+          } else {
+            const pre = (/^iconify:\/\/([^/?#]+)/.exec(setUri) || [])[1] || 'iconify';
+            const r = await fetch('https://api.iconify.design/' + pre + '/' + encodeURIComponent(id) + '.svg');
+            if (r.ok) done(await r.text());
+          }
+        } catch (e) {
+          /* stays empty, like KLWP offline */
+        }
+      })();
+      return null;
+    },
     fontMetrics(uri) {
+      uri = uri || 'builtin:roboto';
       if (uri) {
         A.font(uri);
         const c = A.fonts.get(uri);
@@ -325,8 +620,22 @@
       return ROBOTO;
     },
     iconSet(uri) {
-      if (!uri) return null;
+      uri = String(uri || '').trim();
+      // no set: KLWP's own built-in Material Icons
+      if (!uri) uri = 'builtin:material';
       if (A.sets.has(uri)) return A.sets.get(uri);
+      if (uri === 'builtin:material' && window.KBuiltin) {
+        const map = {};
+        Object.keys(window.KBuiltin.materialMap).forEach(n => {
+          const d = { code: window.KBuiltin.materialMap[n] };
+          map[n] = d;
+          if (!(n.toLowerCase() in map)) map[n.toLowerCase()] = d;
+        });
+        Object.defineProperty(map, '_font', { value: () => A.font('builtin:materialfont'), enumerable: false });
+        Object.defineProperty(map, '_names', { value: Object.keys(window.KBuiltin.materialMap), enumerable: false });
+        A.sets.set(uri, map);
+        return map;
+      }
       let b = A.bytes(uri.replace(/\.ttf$/i, '.json'));
       if (!b && uri.indexOf('/') < 0)
         b = S.files.get('icons/' + uri + '.json') || S.library.get('icons/' + uri + '.json');
@@ -335,17 +644,23 @@
         try {
           const j = JSON.parse(new TextDecoder().decode(b));
           map = {};
+          var names = [];
           (j.icons || []).forEach(ic => {
             const d = { code: (ic.properties && ic.properties.code) || ic.icon.defaultCode || 0 };
             String((ic.properties && ic.properties.name) || '')
               .split(',')
               .forEach(n => {
                 n = n.trim();
-                if (n) map[n] = d;
+                if (!n) return;
+                if (!(n in map)) names.push(n);
+                map[n] = d;
+                // KLWP finds icons whatever the case ("F_wifi_CONNECTED_0" is "F_Wifi_Connected_0")
+                if (!(n.toLowerCase() in map)) map[n.toLowerCase()] = d;
               });
           });
           const ttf = /\.ttf$/i.test(uri) ? uri : KF + 'icons/' + uri + '.ttf';
           Object.defineProperty(map, '_font', { value: () => A.font(ttf), enumerable: false });
+          Object.defineProperty(map, '_names', { value: names, enumerable: false });
         } catch (e) {
           map = null;
         }
@@ -393,7 +708,8 @@
       return ROBOTO;
     }
   }
-  const state = () => ({ preset: S.preset, assets: A, sim: S.sim });
+  // what the formulas read: the editor's simulated data, or this PC's real data
+  const state = () => ({ preset: S.preset, assets: A, sim: S.useSim ? S.sim : S.live, live: !S.useSim });
 
   // ------------------------------------------------------------------ rendering
   let raf = 0;
@@ -406,7 +722,674 @@
       const d = new Date(f);
       if (!isNaN(d)) return d;
     }
-    return new Date();
+    return tzNow(new Date());
+  }
+
+  // ------------------------------------------------------------------ settings shared by every theme
+  // Kept in this browser profile (in the Windows app the editor and the wallpaper share it), like KLWP's own settings.
+  const SET_KEY = 'kwlwp-settings';
+  const SET_DEFAULT = {
+    weather: { provider: 'sim', key: '', every: 60 },
+    loc: { name: '', lat: null, lon: null, country: '', ccode: '', admin: '' },
+    units: { temp: 'C', wind: 'kmh' },
+    clock24h: false,
+    tz: '',
+    livePreview: true,
+    desk: { noSelectRect: false }
+  };
+  let SET = JSON.parse(JSON.stringify(SET_DEFAULT));
+  function loadSettings() {
+    try {
+      const o = JSON.parse(localStorage.getItem(SET_KEY) || 'null');
+      if (o && typeof o === 'object')
+        Object.keys(SET_DEFAULT).forEach(k => {
+          if (o[k] === undefined) return;
+          SET[k] =
+            SET_DEFAULT[k] && typeof SET_DEFAULT[k] === 'object' ? Object.assign({}, SET_DEFAULT[k], o[k]) : o[k];
+        });
+    } catch (e) {
+      /* defaults */
+    }
+  }
+  function saveSettings() {
+    try {
+      localStorage.setItem(SET_KEY, JSON.stringify(SET));
+    } catch (e) {
+      /* private mode */
+    }
+  }
+  // the wall-clock time in the chosen time zone, as a Date whose local fields read that time
+  function tzNow(d) {
+    if (!SET.tz) return d;
+    try {
+      const p = {};
+      new Intl.DateTimeFormat('en-US', {
+        timeZone: SET.tz,
+        hourCycle: 'h23',
+        year: 'numeric',
+        month: 'numeric',
+        day: 'numeric',
+        hour: 'numeric',
+        minute: 'numeric',
+        second: 'numeric'
+      })
+        .formatToParts(d)
+        .forEach(x => {
+          p[x.type] = +x.value;
+        });
+      return new Date(p.year, p.month - 1, p.day, p.hour % 24, p.minute, p.second, d.getMilliseconds());
+    } catch (e) {
+      return d;
+    }
+  }
+  // live data is fetched whenever something shows it: always on the desktop, in the editor while it shows real data
+  const liveOn = () => WALL || !S.useSim;
+  const hasLoc = () => SET.loc && SET.loc.lat !== null && SET.loc.lat !== '';
+  // sun, moon and season for the chosen place (worked out locally, every minute)
+  function updateAstro() {
+    const now = tzNow(new Date()),
+      lat = hasLoc() ? +SET.loc.lat : 0,
+      lon = hasLoc() ? +SET.loc.lon : 0;
+    const a = KLive.astro(now, lat, lon);
+    if (!hasLoc()) {
+      ['sunrise', 'sunset', 'csunrise', 'csunset', 'usunrise', 'usunset', 'asunrise', 'asunset'].forEach(k => {
+        a[k] = '';
+        a['n' + k] = '';
+      });
+      a.moonrise = a.moonset = '';
+    }
+    S.live.ai = Object.assign({}, S.live.ai, a);
+  }
+  function applySettings() {
+    for (const sim of [S.sim, S.live]) {
+      sim.settings = Object.assign({}, sim.settings, { clock24h: !!SET.clock24h });
+      sim.wi = Object.assign({}, sim.wi, { tempu: SET.units.temp, speedu: SET.units.wind });
+    }
+    const sim = S.live;
+    if (hasLoc())
+      sim.li = Object.assign({}, sim.li, {
+        loc: SET.loc.name,
+        country: SET.loc.country,
+        ccode: SET.loc.ccode,
+        admin: SET.loc.admin,
+        lat: +SET.loc.lat,
+        lon: +SET.loc.lon,
+        lplat: +SET.loc.lat,
+        lplon: +SET.loc.lon
+      });
+    hostMsg('setting:noselectrect:' + (SET.desk.noSelectRect ? 1 : 0));
+    updateAstro();
+    scheduleWeather(true);
+    requestRender();
+  }
+
+  // ---- live weather: Open-Meteo (free, no key) or OpenWeatherMap (your API key)
+  const WMO = c =>
+    c === 0
+      ? ['CLEAR', 'Clear']
+      : c === 1
+        ? ['PARTLY_CLOUDY', 'Mostly Clear']
+        : c === 2
+          ? ['MOSTLY_CLOUDY', 'Partly Cloudy']
+          : c === 3
+            ? ['CLOUDY', 'Cloudy']
+            : c === 45 || c === 48
+              ? ['FOG', 'Fog']
+              : c >= 51 && c <= 55
+                ? ['SHOWER', 'Drizzle']
+                : c === 56 || c === 57 || c === 66 || c === 67
+                  ? ['SLEET', 'Freezing Rain']
+                  : c === 61 || (c >= 80 && c <= 82)
+                    ? ['SHOWER', 'Showers']
+                    : c === 63 || c === 65
+                      ? ['RAIN', 'Rain']
+                      : c === 71 || c === 77
+                        ? ['LIGHT_SNOW', 'Light Snow']
+                        : c === 73 || c === 75 || c === 85 || c === 86
+                          ? ['SNOW', 'Snow']
+                          : c === 95
+                            ? ['TSTORM', 'Thunderstorm']
+                            : c === 96 || c === 99
+                              ? ['HAIL', 'Thunderstorm with Hail']
+                              : ['UNKNOWN', 'Unknown'];
+  const OWMC = id =>
+    id >= 200 && id < 300
+      ? ['TSTORM', 'Thunderstorm']
+      : id < 400
+        ? ['SHOWER', 'Drizzle']
+        : id === 511
+          ? ['SLEET', 'Freezing Rain']
+          : id >= 500 && id < 600
+            ? id === 500 || id >= 520
+              ? ['SHOWER', 'Showers']
+              : ['RAIN', 'Rain']
+            : id >= 611 && id <= 616
+              ? ['SLEET', 'Sleet']
+              : id === 600 || id === 620
+                ? ['LIGHT_SNOW', 'Light Snow']
+                : id >= 600 && id < 700
+                  ? ['SNOW', 'Snow']
+                  : id === 781
+                    ? ['TORNADO', 'Tornado']
+                    : id === 741
+                      ? ['FOG', 'Fog']
+                      : id >= 700 && id < 800
+                        ? ['MIST', 'Mist']
+                        : id === 800
+                          ? ['CLEAR', 'Clear']
+                          : id === 801 || id === 802
+                            ? ['PARTLY_CLOUDY', 'Partly Cloudy']
+                            : id === 803
+                              ? ['MOSTLY_CLOUDY', 'Mostly Cloudy']
+                              : id === 804
+                                ? ['CLOUDY', 'Cloudy']
+                                : ['UNKNOWN', 'Unknown'];
+  // air quality for the place (Open-Meteo, free): aq(index), aq(level), aq(label), aq(pm25)...
+  async function fetchAir() {
+    const L = SET.loc;
+    const r = await fetch(
+      'https://air-quality-api.open-meteo.com/v1/air-quality?latitude=' +
+        L.lat +
+        '&longitude=' +
+        L.lon +
+        '&current=european_aqi,us_aqi,pm10,pm2_5,nitrogen_dioxide,ozone,carbon_monoxide,sulphur_dioxide&timeformat=unixtime'
+    );
+    if (!r.ok) return null;
+    const c = (await r.json()).current || {},
+      i = Math.round(c.us_aqi || 0),
+      lv = i <= 50 ? 1 : i <= 100 ? 2 : i <= 150 ? 3 : i <= 200 ? 4 : i <= 300 ? 5 : 6;
+    return {
+      index: i,
+      level: lv,
+      label: ['Good', 'Moderate', 'Unhealthy for Sensitive Groups', 'Unhealthy', 'Very Unhealthy', 'Hazardous'][lv - 1],
+      pm10: Math.round(c.pm10 || 0),
+      pm25: Math.round(c.pm2_5 || 0),
+      no2: Math.round(c.nitrogen_dioxide || 0),
+      o3: Math.round(c.ozone || 0),
+      co: Math.round(((c.carbon_monoxide || 0) / 1000) * 100) / 100,
+      so2: Math.round(c.sulphur_dioxide || 0),
+      source: 'Open-Meteo',
+      station: SET.loc.name || '',
+      updated: c.time || Math.floor(Date.now() / 1000)
+    };
+  }
+  async function fetchWeather() {
+    const r = await fetchWeather1();
+    if (r && hasLoc())
+      try {
+        r.aq = await fetchAir();
+      } catch (e) {
+        /* no air quality */
+      }
+    return r;
+  }
+  async function fetchWeather1() {
+    const w = SET.weather,
+      L = SET.loc;
+    if (w.provider === 'sim' || L.lat === null || L.lat === '') return null;
+    const F_ = SET.units.temp === 'F',
+      wu = SET.units.wind;
+    if (w.provider === 'openmeteo') {
+      const q =
+        'https://api.open-meteo.com/v1/forecast?latitude=' +
+        L.lat +
+        '&longitude=' +
+        L.lon +
+        '&current=temperature_2m,relative_humidity_2m,apparent_temperature,is_day,weather_code,cloud_cover,pressure_msl,wind_speed_10m,wind_direction_10m,dew_point_2m,uv_index,precipitation_probability' +
+        '&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum,precipitation_probability_max,wind_speed_10m_max,wind_direction_10m_dominant,uv_index_max,sunrise,sunset' +
+        '&timezone=auto&timeformat=unixtime&forecast_days=7&temperature_unit=' +
+        (F_ ? 'fahrenheit' : 'celsius') +
+        '&wind_speed_unit=' +
+        (wu === 'ms' ? 'ms' : wu);
+      const r = await fetch(q);
+      if (!r.ok) throw new Error('Open-Meteo: HTTP ' + r.status);
+      const j = await r.json(),
+        c = j.current,
+        d = j.daily,
+        cc = WMO(c.weather_code);
+      const wi = {
+        temp: Math.round(c.temperature_2m),
+        flik: Math.round(c.apparent_temperature),
+        wchill: Math.round(c.apparent_temperature),
+        cond: cc[1],
+        icon: cc[0],
+        code: cc[0],
+        hum: Math.round(c.relative_humidity_2m),
+        press: Math.round(c.pressure_msl),
+        wspeed: Math.round(c.wind_speed_10m),
+        wdir: Math.round(c.wind_direction_10m),
+        clouds: Math.round(c.cloud_cover),
+        uvindex: Math.round(c.uv_index || 0),
+        dpoint: Math.round(c.dew_point_2m),
+        prain: Math.round(c.precipitation_probability || 0),
+        updated: Math.floor(Date.now() / 1000),
+        provider: 'Open-Meteo',
+        tempu: SET.units.temp,
+        speedu: wu
+      };
+      const wf = d.time.map((t, i) => {
+        const dc = WMO(d.weather_code[i]);
+        return {
+          min: Math.round(d.temperature_2m_min[i]),
+          max: Math.round(d.temperature_2m_max[i]),
+          temp: Math.round((d.temperature_2m_min[i] + d.temperature_2m_max[i]) / 2),
+          cond: dc[1],
+          icon: dc[0],
+          code: dc[0],
+          wspeed: Math.round(d.wind_speed_10m_max[i]),
+          wdir: Math.round(d.wind_direction_10m_dominant[i]),
+          hum: wi.hum,
+          rain: Math.round(d.precipitation_sum[i] * 10) / 10,
+          rainc: Math.round(d.precipitation_probability_max[i] || 0),
+          press: wi.press,
+          clouds: wi.clouds,
+          uvindex: Math.round(d.uv_index_max[i] || 0)
+        };
+      });
+      const ai = { isday: c.is_day ? 1 : 0 };
+      if (d.sunrise && d.sunrise[0]) ai.sunrise = d.sunrise[0];
+      if (d.sunset && d.sunset[0]) ai.sunset = d.sunset[0];
+      if (d.sunrise && d.sunrise[1]) ai.nsunrise = d.sunrise[1];
+      if (d.sunset && d.sunset[1]) ai.nsunset = d.sunset[1];
+      return { wi, wf, ai };
+    }
+    if (w.provider === 'owm') {
+      if (!w.key) throw new Error('OpenWeatherMap needs an API key');
+      const base = 'https://api.openweathermap.org/data/2.5/',
+        qs =
+          '?lat=' +
+          L.lat +
+          '&lon=' +
+          L.lon +
+          '&units=' +
+          (F_ ? 'imperial' : 'metric') +
+          '&appid=' +
+          encodeURIComponent(w.key);
+      const [r1, r2] = await Promise.all([fetch(base + 'weather' + qs), fetch(base + 'forecast' + qs)]);
+      if (!r1.ok) throw new Error('OpenWeatherMap: HTTP ' + r1.status);
+      const c = await r1.json(),
+        fc = r2.ok ? await r2.json() : { list: [] };
+      // OWM gives m/s (metric) or mph (imperial)
+      const ms = v => (F_ ? v * 0.44704 : v),
+        spd = v => {
+          const m = ms(v);
+          return Math.round(wu === 'kmh' ? m * 3.6 : wu === 'mph' ? m * 2.23694 : wu === 'kn' ? m * 1.94384 : m);
+        };
+      const cc = OWMC((c.weather && c.weather[0] && c.weather[0].id) || 0);
+      const wi = {
+        temp: Math.round(c.main.temp),
+        flik: Math.round(c.main.feels_like),
+        wchill: Math.round(c.main.feels_like),
+        cond: cc[1],
+        icon: cc[0],
+        code: cc[0],
+        hum: Math.round(c.main.humidity),
+        press: Math.round(c.main.pressure),
+        wspeed: spd(c.wind.speed),
+        wdir: Math.round(c.wind.deg || 0),
+        clouds: Math.round((c.clouds && c.clouds.all) || 0),
+        updated: Math.floor(Date.now() / 1000),
+        provider: 'OpenWeatherMap',
+        tempu: SET.units.temp,
+        speedu: wu
+      };
+      const days = new Map();
+      (fc.list || []).forEach(x => {
+        const k = new Date(x.dt * 1000).toDateString();
+        if (!days.has(k)) days.set(k, []);
+        days.get(k).push(x);
+      });
+      const wf = [...days.values()].map(a => {
+        const mid = a[Math.floor(a.length / 2)],
+          dc = OWMC((mid.weather && mid.weather[0] && mid.weather[0].id) || 0);
+        return {
+          min: Math.round(
+            Math.min.apply(
+              null,
+              a.map(x => x.main.temp_min)
+            )
+          ),
+          max: Math.round(
+            Math.max.apply(
+              null,
+              a.map(x => x.main.temp_max)
+            )
+          ),
+          temp: Math.round(mid.main.temp),
+          cond: dc[1],
+          icon: dc[0],
+          code: dc[0],
+          wspeed: spd(
+            Math.max.apply(
+              null,
+              a.map(x => x.wind.speed)
+            )
+          ),
+          wdir: Math.round(mid.wind.deg || 0),
+          hum: Math.round(mid.main.humidity),
+          rain: Math.round(a.reduce((t, x) => t + ((x.rain && x.rain['3h']) || 0), 0) * 10) / 10,
+          rainc: Math.round(
+            Math.max.apply(
+              null,
+              a.map(x => x.pop || 0)
+            ) * 100
+          ),
+          press: Math.round(mid.main.pressure),
+          clouds: Math.round((mid.clouds && mid.clouds.all) || 0)
+        };
+      });
+      const ai = {};
+      if (c.sys && c.sys.sunrise) ai.sunrise = c.sys.sunrise;
+      if (c.sys && c.sys.sunset) ai.sunset = c.sys.sunset;
+      return { wi, wf, ai };
+    }
+    return null;
+  }
+  let weatherTimer = 0,
+    weatherAt = 0;
+  async function refreshWeather(quiet) {
+    try {
+      const r = await fetchWeather();
+      weatherAt = Date.now();
+      if (!r) return;
+      S.live.wi = Object.assign({}, S.live.wi, r.wi);
+      while (r.wf.length < 7 && r.wf.length) r.wf.push(Object.assign({}, r.wf[r.wf.length - 1]));
+      S.live.wf = r.wf;
+      if (r.aq) S.live.aq = Object.assign({}, S.live.aq, r.aq);
+      requestRender();
+      if (S.panel === 'sim' && !WALL) renderSim();
+      if (!quiet) toast('Weather updated: ' + r.wi.temp + '°' + SET.units.temp + ', ' + r.wi.cond);
+    } catch (e) {
+      if (!quiet) toast('Weather: ' + e.message);
+    }
+  }
+  function scheduleWeather(now) {
+    clearInterval(weatherTimer);
+    weatherTimer = 0;
+    if (SET.weather.provider === 'sim' || !liveOn()) return;
+    const every = Math.max(15, +SET.weather.every || 60) * 60000;
+    if (now || Date.now() - weatherAt > every) refreshWeather(true);
+    weatherTimer = setInterval(() => refreshWeather(true), every);
+  }
+  async function findPlaces(q) {
+    const r = await fetch(
+      'https://geocoding-api.open-meteo.com/v1/search?count=8&language=en&format=json&name=' + encodeURIComponent(q)
+    );
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    return ((await r.json()).results || []).map(x => ({
+      name: x.name,
+      lat: Math.round(x.latitude * 10000) / 10000,
+      lon: Math.round(x.longitude * 10000) / 10000,
+      country: x.country || '',
+      ccode: x.country_code || '',
+      admin: x.admin1 || '',
+      tz: x.timezone || ''
+    }));
+  }
+  function settingsDialog() {
+    const T = JSON.parse(JSON.stringify(SET));
+    const sel = (val, opts, on) =>
+      h(
+        'select',
+        { onchange: e => on(e.target.value) },
+        opts.map(o => h('option', { value: o[0], text: o[1], selected: String(o[0]) === String(val) }))
+      );
+    const ck = (val, label, on) =>
+      h(
+        'label',
+        { class: 'ck' },
+        h('input', { type: 'checkbox', checked: !!val, onchange: e => on(e.target.checked) }),
+        h('span', { text: label })
+      );
+    const keyRow = h('input', {
+      type: 'password',
+      placeholder: 'API key from openweathermap.org',
+      value: T.weather.key,
+      oninput: e => {
+        T.weather.key = e.target.value.trim();
+      }
+    });
+    const keyWrap = h('div', { class: 'row2' }, keyRow);
+    const showKey = () => {
+      keyWrap.style.display = T.weather.provider === 'owm' ? '' : 'none';
+      keyLbl.style.display = keyWrap.style.display;
+    };
+    const keyLbl = h('span', { text: 'API key' });
+    const locTxt = h('span', { class: 'hint' });
+    const showLoc = () => {
+      locTxt.textContent =
+        T.loc.lat === null || T.loc.lat === ''
+          ? 'No location set'
+          : [T.loc.name, T.loc.admin, T.loc.country].filter(Boolean).join(', ') +
+            '  (' +
+            T.loc.lat +
+            ', ' +
+            T.loc.lon +
+            ')';
+    };
+    const results = h('div', { class: 'locres' });
+    const q = h('input', { placeholder: 'City or town', value: T.loc.name });
+    const search = async () => {
+      results.innerHTML = '';
+      if (!q.value.trim()) return;
+      results.append(h('span', { class: 'hint', text: 'Searching…' }));
+      try {
+        const list = await findPlaces(q.value.trim());
+        results.innerHTML = '';
+        if (!list.length) results.append(h('span', { class: 'hint', text: 'Nothing found' }));
+        list.forEach(pl =>
+          results.append(
+            h('button', {
+              text: [pl.name, pl.admin, pl.country].filter(Boolean).join(', ') + '   ' + pl.lat + ', ' + pl.lon,
+              onclick: () => {
+                T.loc = {
+                  name: pl.name,
+                  lat: pl.lat,
+                  lon: pl.lon,
+                  country: pl.country,
+                  ccode: pl.ccode,
+                  admin: pl.admin
+                };
+                results.innerHTML = '';
+                showLoc();
+              }
+            })
+          )
+        );
+      } catch (e) {
+        results.innerHTML = '';
+        results.append(h('span', { class: 'hint', text: 'Search failed: ' + e.message }));
+      }
+    };
+    q.onkeydown = e => {
+      if (e.key === 'Enter') search();
+    };
+    let zones = [];
+    try {
+      zones = Intl.supportedValuesOf('timeZone');
+    } catch (e) {
+      zones = [];
+    }
+    const here = Intl.DateTimeFormat().resolvedOptions().timeZone || 'this computer';
+    const body = h(
+      'div',
+      { class: 'setform' },
+      h('div', { class: 'sh', text: 'Weather' }),
+      h('span', { text: 'Provider' }),
+      sel(
+        T.weather.provider,
+        [
+          ['sim', 'None'],
+          ['openmeteo', 'Open-Meteo (free, no key)'],
+          ['owm', 'OpenWeatherMap (needs a key)']
+        ],
+        v => {
+          T.weather.provider = v;
+          showKey();
+        }
+      ),
+      keyLbl,
+      keyWrap,
+      h('span', { text: 'Update every' }),
+      sel(
+        T.weather.every,
+        [
+          [15, '15 minutes'],
+          [30, '30 minutes'],
+          [60, '1 hour'],
+          [120, '2 hours'],
+          [240, '4 hours']
+        ],
+        v => {
+          T.weather.every = +v;
+        }
+      ),
+      h('div', { class: 'sh', text: 'Location' }),
+      h('span', { text: 'Find a place' }),
+      h('div', { class: 'row2' }, q, h('button', { class: 'btn', text: 'Search', onclick: search })),
+      results,
+      h('span', { text: 'Using' }),
+      locTxt,
+      h('div', { class: 'sh', text: 'Units and time' }),
+      h('span', { text: 'Temperature' }),
+      sel(
+        T.units.temp,
+        [
+          ['C', 'Celsius (°C)'],
+          ['F', 'Fahrenheit (°F)']
+        ],
+        v => {
+          T.units.temp = v;
+        }
+      ),
+      h('span', { text: 'Wind speed' }),
+      sel(
+        T.units.wind,
+        [
+          ['kmh', 'km/h'],
+          ['mph', 'mph'],
+          ['ms', 'm/s'],
+          ['kn', 'knots']
+        ],
+        v => {
+          T.units.wind = v;
+        }
+      ),
+      h('span', { text: 'Clock' }),
+      sel(
+        T.clock24h ? '24' : '12',
+        [
+          ['12', '12-hour (3:45 PM)'],
+          ['24', '24-hour (15:45)']
+        ],
+        v => {
+          T.clock24h = v === '24';
+        }
+      ),
+      h('span', { text: 'Time zone' }),
+      sel(T.tz, [['', 'Automatic (' + here + ')']].concat(zones.map(z => [z, z.replace(/_/g, ' ')])), v => {
+        T.tz = v;
+      }),
+      h('div', { class: 'sh', text: 'Editor' }),
+      h('span'),
+      h('div', {
+        class: 'note',
+        text: "The editor shows either the simulated data from the Device data panel or this PC's real data (the button with the phone in the preview controls). The desktop wallpaper always uses real data, unless \"Use the editor's simulated data\" is ticked in the tray icon's menu."
+      }),
+      h('div', { class: 'sh', text: 'Windows desktop' }),
+      h('span'),
+      ck(T.desk.noSelectRect, 'Turn off the blue selection box when click-dragging on the desktop', v => {
+        T.desk.noSelectRect = v;
+      }),
+      h('div', {
+        class: 'note',
+        text: HOST
+          ? 'Clicks and drags on empty desktop space still reach the wallpaper; desktop icons keep working as usual.'
+          : 'This one only does something in the Windows app.'
+      })
+    );
+    showKey();
+    showLoc();
+    dialog(
+      'Settings',
+      body,
+      [
+        ['Cancel'],
+        [
+          'Save',
+          () => {
+            SET = T;
+            saveSettings();
+            applySettings();
+            if (SET.weather.provider !== 'sim' && liveOn()) refreshWeather(false);
+          },
+          true
+        ]
+      ],
+      true
+    );
+  }
+
+  // ---- an app-style right-click menu (the browser's own menu is switched off in the Windows app)
+  function ctxMenu(e) {
+    if (e.defaultPrevented) return; // the preview's own item menu
+    const t = e.target,
+      edit = t.closest && t.closest('input, textarea, [contenteditable]');
+    document.querySelectorAll('.ctxmenu').forEach(x => x.remove());
+    e.preventDefault();
+    if (!edit) return;
+    const ro = edit.readOnly || edit.disabled,
+      sel = edit.selectionStart !== undefined && edit.selectionStart !== edit.selectionEnd;
+    const close = () => m.remove();
+    const item = (label, kbd, on, ok) =>
+      h(
+        'button',
+        {
+          disabled: !ok,
+          onpointerdown: ev => ev.preventDefault(),
+          onclick: () => {
+            close();
+            edit.focus();
+            on();
+          }
+        },
+        h('span', { text: label }),
+        h('kbd', { text: kbd })
+      );
+    const m = h(
+      'div',
+      { class: 'ctxmenu' },
+      item('Cut', 'Ctrl+X', () => document.execCommand('cut'), sel && !ro),
+      item('Copy', 'Ctrl+C', () => document.execCommand('copy'), sel),
+      item(
+        'Paste',
+        'Ctrl+V',
+        async () => {
+          try {
+            const txt = await navigator.clipboard.readText();
+            document.execCommand('insertText', false, txt);
+          } catch (err) {
+            toast('Use Ctrl+V to paste here');
+          }
+        },
+        !ro
+      ),
+      h('hr'),
+      item('Select all', 'Ctrl+A', () => edit.select && edit.select(), true)
+    );
+    document.body.append(m);
+    const r = m.getBoundingClientRect();
+    m.style.left = Math.min(e.clientX, innerWidth - r.width - 4) + 'px';
+    m.style.top = Math.min(e.clientY, innerHeight - r.height - 4) + 'px';
+    setTimeout(() => {
+      const off = ev => {
+        if (!m.contains(ev.target)) {
+          close();
+          document.removeEventListener('pointerdown', off, true);
+        }
+      };
+      document.addEventListener('pointerdown', off, true);
+    });
   }
   function viewOpts(v) {
     return {
@@ -416,7 +1399,8 @@
       scroll: Math.max(0, Math.min(S.scroll, S.screens - 1)),
       locked: S.locked,
       play: S.play,
-      now: simNow()
+      now: simNow(),
+      uiScale: WALL || v.desk ? deskScale() : 1
     };
   }
   function renderAll() {
@@ -444,6 +1428,27 @@
           o.setLineDash([6 / k, 4 / k]);
           o.strokeRect(0, 0, hh.w, hh.h);
         });
+      // snapping guides while an item is dragged
+      const gd = S.guides;
+      if (gd && gd.view === v) {
+        const px = v.canvas.width / (parseFloat(v.canvas.style.width) || v.canvas.width);
+        o.setTransform(1, 0, 0, 1, 0, 0);
+        o.setLineDash([]);
+        o.lineWidth = Math.max(1, px);
+        o.strokeStyle = '#00e5ff';
+        o.beginPath();
+        gd.xs.forEach(x => {
+          const X = Math.round(x * px) + 0.5;
+          o.moveTo(X, 0);
+          o.lineTo(X, v.overlay.height);
+        });
+        gd.ys.forEach(y => {
+          const Y = Math.round(y * px) + 0.5;
+          o.moveTo(0, Y);
+          o.lineTo(v.overlay.width, Y);
+        });
+        o.stroke();
+      }
     });
     const st = $('#status');
     if (st) {
@@ -501,23 +1506,87 @@
         height: Math.round(ch * dpr),
         style: { width: cw + 'px', height: ch + 'px' }
       });
+      if (!S.monitors.length) S.monitors = readMonitors();
+      const groups = [
+        ['Phones and tablets', 'd', DEVICES],
+        ['Desktop', 'k', DESKTOPS],
+        ["This PC's monitors", 'm', S.monitors]
+      ];
+      const lists = { d: DEVICES, k: DESKTOPS, m: S.monitors };
       const sel = h(
         'select',
         {
-          title: 'Device preset',
+          title: 'Preview size: a phone, a desktop size, or one of the monitors plugged into this PC',
           onchange: e => {
-            const d = DEVICES[e.target.value];
+            const val = e.target.value;
+            if (val === 'detect') return detectMonitors();
+            const d = (lists[val[0]] || [])[+val.slice(2)];
             if (d) {
               v.name = d[0];
               v.w = d[1];
               v.h = d[2];
+              v.desk = val[0] !== 'd';
             } else v.name = 'Custom';
             layoutViews();
           }
         },
-        DEVICES.map((d, di) => h('option', { value: di, text: d[0], selected: d[0] === v.name })),
-        h('option', { value: -1, text: 'Custom', selected: v.name === 'Custom' })
+        groups.map(g =>
+          h(
+            'optgroup',
+            { label: g[0] },
+            g[2].map((d, di) => h('option', { value: g[1] + ':' + di, text: d[0], selected: d[0] === v.name }))
+          )
+        ),
+        h(
+          'optgroup',
+          { label: 'Other' },
+          h('option', { value: '-1', text: 'Custom', selected: v.name === 'Custom' }),
+          !HOST && window.getScreenDetails ? h('option', { value: 'detect', text: 'Find all my monitors…' }) : null
+        )
       );
+      const mv = S.meta.view,
+        isDefault = !!mv && mv.w === v.w && mv.h === v.h;
+      const pin = h('button', {
+        class: 'ib' + (isDefault ? ' on' : ''),
+        title: isDefault
+          ? "This is the theme's default preview size (click to clear it)"
+          : 'Make this the default preview size for this theme (saved inside the .klwp, invisible to KLWP)',
+        text: isDefault ? '★' : '☆',
+        onclick: () => {
+          if (isDefault) delete S.meta.view;
+          else S.meta.view = { name: v.name, w: v.w, h: v.h, desk: !!v.desk };
+          saveMeta(true);
+          toast(isDefault ? 'Default preview size cleared' : 'Saved as this theme’s default preview size');
+          layoutViews();
+        }
+      });
+      const scaleIn =
+        v.desk &&
+        h(
+          'label',
+          {
+            class: 'dscale',
+            title:
+              'Desktop scale for this theme: how big Kustom units are on a monitor. 100% is what KLWP would do; phone themes usually look right around 50-70%. Used by the desktop wallpaper too.'
+          },
+          h('span', { text: 'Scale' }),
+          h('input', {
+            type: 'number',
+            min: 10,
+            max: 400,
+            step: 5,
+            value: Math.round(deskScale() * 100),
+            onchange: e => {
+              const n = Math.max(10, Math.min(400, Math.round(+e.target.value || 100)));
+              e.target.value = n;
+              if (n === 100) delete S.meta.deskScale;
+              else S.meta.deskScale = n;
+              saveMeta(true);
+              requestRender();
+            }
+          }),
+          h('span', { text: '%' })
+        );
       const setDim = () => {
         const a = ratioIn.value.trim();
         let m = /^(\d+(?:\.\d+)?)\s*[:x×/]\s*(\d+(?:\.\d+)?)$/i.exec(a);
@@ -543,6 +1612,7 @@
         v.w = Math.round(w);
         v.h = Math.round(hh);
         v.name = 'Custom';
+        v.desk = v.w > v.h && v.w >= 1280;
         layoutViews();
       };
       const ratioIn = h('input', {
@@ -565,6 +1635,8 @@
             { class: 'viewbar' },
             sel,
             ratioIn,
+            scaleIn,
+            pin,
             h('button', {
               class: 'ib',
               title: 'Rotate (portrait / landscape)',
@@ -649,6 +1721,74 @@
     }
     return false;
   }
+  // an item marked "not selectable" (or inside one) lets clicks fall through to what is under it.
+  // The flag is an extra key on the item; KLWP ignores keys it does not know and drops them when it saves.
+  const NOSEL = 'kwlwp_noselect';
+  function isLocked(m) {
+    if (!m) return false;
+    if (m[NOSEL]) return true;
+    const p = findPath(m);
+    if (!p) return false;
+    for (let i = 0; i < p.length; i++) {
+      const a = modAt(p.slice(0, i));
+      if (a && a[NOSEL]) return true;
+    }
+    return false;
+  }
+  // corners of a hit box in css pixels relative to the canvas
+  function hitBox(v, hh) {
+    const px = v.canvas.width / v.canvas.getBoundingClientRect().width;
+    let l = Infinity,
+      t = Infinity,
+      r = -Infinity,
+      b = -Infinity;
+    [
+      [0, 0],
+      [hh.w, 0],
+      [0, hh.h],
+      [hh.w, hh.h]
+    ].forEach(c => {
+      const q = hh.mt.transformPoint(new DOMPoint(c[0], c[1]));
+      l = Math.min(l, q.x / px);
+      r = Math.max(r, q.x / px);
+      t = Math.min(t, q.y / px);
+      b = Math.max(b, q.y / px);
+    });
+    return { l, t, r, b };
+  }
+  function snapTargets(v, m) {
+    const rc = v.canvas.getBoundingClientRect(),
+      xs = [0, rc.width / 2, rc.width],
+      ys = [0, rc.height / 2, rc.height],
+      sib = root().viewgroup_items || [];
+    v.rt.hits.forEach(hh => {
+      if (hh.m === m || sib.indexOf(hh.m) < 0) return;
+      const b = hitBox(v, hh);
+      if (!isFinite(b.l) || b.r - b.l < 1) return;
+      xs.push(b.l, (b.l + b.r) / 2, b.r);
+      ys.push(b.t, (b.t + b.b) / 2, b.b);
+    });
+    return { xs, ys };
+  }
+  // move by d, nudged so an edge or the centre of the box lands on a target within 6 px
+  function snapAxis(lo, hi, d, targets, out) {
+    const feats = [lo, (lo + hi) / 2, hi];
+    let best = null;
+    feats.forEach(f => {
+      targets.forEach(t => {
+        const g = t - (f + d);
+        if (Math.abs(g) <= 6 && (!best || Math.abs(g) < Math.abs(best.g))) best = { g, t };
+      });
+    });
+    if (!best) return d;
+    d += best.g;
+    feats.forEach(f => {
+      targets.forEach(t => {
+        if (Math.abs(t - (f + d)) < 0.5 && !out.some(o => Math.abs(o - t) < 0.5)) out.push(t);
+      });
+    });
+    return d;
+  }
   function bindCanvas(v, el) {
     let drag = null,
       touch = null,
@@ -697,7 +1837,7 @@
         fireTouch(v, e, 'TOUCH_DOWN');
         return;
       }
-      const hits = hitAt(v, e).filter(x => x.m !== root());
+      const hits = hitAt(v, e).filter(x => x.m !== root() && !isLocked(x.m));
       if (!hits.length) {
         S.path = [];
         S.tab = null;
@@ -734,7 +1874,7 @@
       if (
         pick.m === selM &&
         parent &&
-        parent.internal_type !== 'StackLayerModule' &&
+        S.path.length === 1 && // only items on the root have X/Y offsets; inside groups KLWP places items by anchor and padding
         !tg.position_offset_x &&
         !tg.position_offset_y
       ) {
@@ -746,6 +1886,8 @@
           ox: m.position_offset_x || 0,
           oy: m.position_offset_y || 0,
           k: k / px,
+          box: hitBox(v, pick),
+          tg: snapTargets(v, m),
           moved: false,
           sx: /RIGHT/.test(an) ? -1 : 1,
           sy: /^BOTTOM/.test(an) ? -1 : 1
@@ -778,15 +1920,23 @@
         return;
       }
       if (!drag) return;
-      const dx = (e.clientX - drag.x) / drag.k,
-        dy = (e.clientY - drag.y) / drag.k;
-      if (!drag.moved && Math.abs(e.clientX - drag.x) + Math.abs(e.clientY - drag.y) < 4) return;
+      let cx = e.clientX - drag.x,
+        cy = e.clientY - drag.y;
+      if (!drag.moved && Math.abs(cx) + Math.abs(cy) < 4) return;
       if (!drag.moved) {
         snapshot();
         drag.moved = true;
       }
-      drag.m.position_offset_x = Math.round(drag.ox + dx * drag.sx);
-      drag.m.position_offset_y = Math.round(drag.oy + dy * drag.sy);
+      // snap edges and centres to the screen and to the other items, like a design app (hold Alt to move freely)
+      const gx = [],
+        gy = [];
+      if (S.snap && !e.altKey && isFinite(drag.box.l)) {
+        cx = snapAxis(drag.box.l, drag.box.r, cx, drag.tg.xs, gx);
+        cy = snapAxis(drag.box.t, drag.box.b, cy, drag.tg.ys, gy);
+      }
+      S.guides = gx.length || gy.length ? { view: v, xs: gx, ys: gy } : null;
+      drag.m.position_offset_x = Math.round(drag.ox + (cx / drag.k) * drag.sx);
+      drag.m.position_offset_y = Math.round(drag.oy + (cy / drag.k) * drag.sy);
       requestRender();
     });
     const up = e => {
@@ -818,6 +1968,10 @@
       }
       if (drag && drag.moved) renderEditor();
       drag = null;
+      if (S.guides) {
+        S.guides = null;
+        requestRender();
+      }
     };
     el.addEventListener('pointerup', up);
     el.addEventListener('pointercancel', () => {
@@ -827,6 +1981,7 @@
         scrollTo(Math.round(S.scroll));
       }
       drag = null;
+      S.guides = null;
     });
     el.addEventListener(
       'wheel',
@@ -841,9 +1996,26 @@
       },
       { passive: false }
     );
+    // right-click on an item in the preview: quick actions on it (select mode only)
+    el.addEventListener('contextmenu', e => {
+      e.preventDefault();
+      if (S.touch) return;
+      const hits = hitAt(v, e).filter(x => x.m !== root() && !isLocked(x.m));
+      if (!hits.length) return;
+      const selM = cur();
+      const pick = hits.find(x => x.m === selM) || hits[hits.length - 1];
+      const p = findPath(pick.m);
+      if (!p) return;
+      S.path = p;
+      S.tab = null;
+      S.checked.clear();
+      renderEditor();
+      requestRender();
+      itemMenu(e.clientX, e.clientY);
+    });
     el.addEventListener('dblclick', e => {
       if (S.touch) return;
-      const hits = hitAt(v, e).filter(x => x.m !== root());
+      const hits = hitAt(v, e).filter(x => x.m !== root() && !isLocked(x.m));
       if (hits.length) {
         const p = findPath(hits[hits.length - 1].m);
         if (p) {
@@ -854,6 +2026,155 @@
         }
       }
     });
+  }
+  // the quick-action menu for the selected item. Order in the item list is drawing order: later items are on top.
+  function itemMenu(x, y) {
+    document.querySelectorAll('.ctxmenu').forEach(c => c.remove());
+    if (!S.path.length) return;
+    const parent = modAt(S.path.slice(0, -1)),
+      items = parent && parent.viewgroup_items;
+    if (!items) return;
+    const i = S.path[S.path.length - 1],
+      m = items[i],
+      n = items.length;
+    const moveTo = j => {
+      j = Math.max(0, Math.min(n - 1, j));
+      if (j === i) return;
+      snapshot();
+      items.splice(i, 1);
+      items.splice(j, 0, m);
+      S.path = S.path.slice(0, -1).concat(j);
+      S.dirty = true;
+      updateBar();
+      renderEditor();
+      requestRender();
+    };
+    const close = () => menu.remove();
+    const item = (label, kbd, fn, ok) =>
+      h(
+        'button',
+        {
+          disabled: ok === false,
+          onclick: () => {
+            close();
+            fn();
+          }
+        },
+        h('span', { text: label }),
+        h('kbd', { text: kbd || '' })
+      );
+    const menu = h(
+      'div',
+      { class: 'ctxmenu' },
+      h('div', { class: 'cmtitle', text: titleOf(m) }),
+      item('Bring forward', 'Ctrl ]', () => moveTo(i + 1), i < n - 1),
+      item('Send backward', 'Ctrl [', () => moveTo(i - 1), i > 0),
+      item('Bring to front', 'Ctrl Shift ]', () => moveTo(n - 1), i < n - 1),
+      item('Send to back', 'Ctrl Shift [', () => moveTo(0), i > 0),
+      h('hr'),
+      item('Duplicate', 'Ctrl D', () => {
+        snapshot();
+        items.splice(i + 1, 0, JSON.parse(JSON.stringify(m)));
+        S.path = S.path.slice(0, -1).concat(i + 1);
+        S.dirty = true;
+        updateBar();
+        renderEditor();
+        requestRender();
+      }),
+      item('Copy', 'Ctrl C', () => {
+        S.clipboard = JSON.stringify([m]);
+        toast('Copied – paste it from the item list');
+      }),
+      item(m[NOSEL] ? 'Make selectable' : 'Make click-through', '', () => {
+        snapshot();
+        if (m[NOSEL]) delete m[NOSEL];
+        else m[NOSEL] = true;
+        S.dirty = true;
+        updateBar();
+        renderEditor();
+      }),
+      item(
+        'Select the group it is in',
+        'Esc',
+        () => {
+          S.path = S.path.slice(0, -1);
+          S.tab = null;
+          renderEditor();
+          requestRender();
+        },
+        S.path.length > 1
+      ),
+      h('hr'),
+      item('Delete', 'Del', () => {
+        snapshot();
+        items.splice(i, 1);
+        S.path = S.path.slice(0, -1);
+        S.tab = null;
+        S.dirty = true;
+        updateBar();
+        renderEditor();
+        requestRender();
+      })
+    );
+    document.body.append(menu);
+    const r = menu.getBoundingClientRect();
+    menu.style.left = Math.min(x, innerWidth - r.width - 4) + 'px';
+    menu.style.top = Math.min(y, innerHeight - r.height - 4) + 'px';
+    setTimeout(() => {
+      const off = ev => {
+        if (!menu.contains(ev.target)) {
+          close();
+          document.removeEventListener('pointerdown', off, true);
+        }
+      };
+      document.addEventListener('pointerdown', off, true);
+    });
+  }
+  // the same moves from the keyboard, for the selected item
+  function itemKeys(e) {
+    if (!S.path.length || S.touch) return false;
+    const parent = modAt(S.path.slice(0, -1)),
+      items = parent && parent.viewgroup_items;
+    if (!items) return false;
+    const i = S.path[S.path.length - 1],
+      n = items.length,
+      ctrl = e.ctrlKey || e.metaKey;
+    let j = null;
+    if (ctrl && e.key === ']') j = e.shiftKey ? n - 1 : i + 1;
+    else if (ctrl && e.key === '[') j = e.shiftKey ? 0 : i - 1;
+    else if (ctrl && e.key.toLowerCase() === 'd') {
+      snapshot();
+      items.splice(i + 1, 0, JSON.parse(JSON.stringify(items[i])));
+      S.path = S.path.slice(0, -1).concat(i + 1);
+    } else if (e.key === 'Delete') {
+      snapshot();
+      items.splice(i, 1);
+      S.path = S.path.slice(0, -1);
+      S.tab = null;
+    } else return false;
+    if (j !== null) {
+      j = Math.max(0, Math.min(n - 1, j));
+      if (j === i) return true;
+      snapshot();
+      const m = items.splice(i, 1)[0];
+      items.splice(j, 0, m);
+      S.path = S.path.slice(0, -1).concat(j);
+    }
+    S.dirty = true;
+    updateBar();
+    renderEditor();
+    requestRender();
+    return true;
+  }
+  // "C:\\Games\\x.exe", "\"C:\\Program Files\\x.exe\" --flag", "%APPDATA%\\x", "\\\\server\\share\\x" -> { path, args }
+  function winPath(s) {
+    s = String(s || '').trim();
+    if (!/^"?([A-Za-z]:[\\/]|\\\\|%[A-Za-z0-9_()]+%)/.test(s)) return null;
+    if (s[0] === '"') {
+      const end = s.indexOf('"', 1);
+      return end > 1 ? { path: s.slice(1, end), args: s.slice(end + 1).trim() } : null;
+    }
+    return { path: s, args: '' };
   }
   function runEvents(m, v, list) {
     const scopes = kompScopes(findPath(m) || []);
@@ -896,6 +2217,17 @@
             );
         });
         toast('Flow: ' + (fl.name || fl.id));
+      } else if (
+        /^(LAUNCH_APP|LAUNCH_ACTIVITY|LAUNCH_SHORTCUT|APP_AND_SWITCH|SHORTCUT_AND_SWITCH)$/.test(act) &&
+        winPath(get('intent', ''))
+      ) {
+        // a Windows path in the App / intent field: the Windows app opens it, like double-clicking it in Explorer
+        const target = String(get('intent', '')).trim(),
+          wp = winPath(target);
+        hostMsg('launch:' + target);
+        toast((HOST ? 'Opening ' : 'In the Windows app this opens ') + wp.path.split(/[\\/]/).filter(Boolean).pop());
+        if (/SWITCH/.test(act) && get('switch', ''))
+          setRuntimeGlobal(String(get('switch', '')).toLowerCase(), ev, v, scopes);
       } else if (act === 'OPEN_LINK') {
         hostMsg('link:' + get('url', ''));
         toast('Would open: ' + get('url', ''));
@@ -1008,6 +2340,7 @@
         true
       ]
     ]);
+    return ins;
   }
 
   // ------------------------------------------------------------------ property editing
@@ -1026,8 +2359,11 @@
   }
   function evalNow(tpl) {
     const v = S.views[0];
-    if (!v || !v.opts) return { value: '', error: null };
-    return R.evalIn(state(), v.opts, v.rt, null, tpl, kompScopes(S.path));
+    const syn = F.check(tpl);
+    if (!v || !v.opts) return { value: '', error: syn[0] || null, errors: syn };
+    const r = R.evalIn(state(), v.opts, v.rt, null, tpl, kompScopes(S.path)),
+      all = syn.concat((r.errors || []).filter(e => syn.indexOf(e) < 0));
+    return { value: r.value, error: all[0] || null, errors: all };
   }
   function setVal(o, k, val, key) {
     snapshot(key || 'p:' + k);
@@ -1156,8 +2492,82 @@
     A.reset();
     return KF + p;
   }
+  // object URLs for image thumbnails, one per file
+  const thumbUrls = new Map();
+  function thumbUrl(p) {
+    if (thumbUrls.has(p)) return thumbUrls.get(p);
+    const b = S.files.get(p) || S.library.get(p);
+    const u = b ? URL.createObjectURL(new Blob([b])) : '';
+    thumbUrls.set(p, u);
+    return u;
+  }
+  // an image field: a button showing the current picture, opening a list where every image has its thumbnail
+  function bitmapPicker(val, items, onPick, onAdd) {
+    const curP = val && String(val).indexOf(KF) === 0 ? String(val).slice(KF.length) : '';
+    const label = curP ? curP.split('/').pop() : val ? String(val) : 'None';
+    const btn = h(
+      'button',
+      { class: 'bmpick', type: 'button', title: curP || String(val || '') },
+      curP && thumbUrl(curP) ? h('img', { src: thumbUrl(curP) }) : h('i', { class: 'nothumb' }),
+      h('span', { text: label + (curP && items.indexOf(curP) < 0 ? ' (missing)' : '') }),
+      h('b', { text: '▾' })
+    );
+    btn.onclick = e => {
+      e.stopPropagation();
+      document.querySelectorAll('.bmlist').forEach(x => x.remove());
+      const list = h('div', { class: 'bmlist' });
+      const row = (p, text, sub, on) =>
+        h(
+          'button',
+          {
+            class: 'bmrow' + (p === curP ? ' on' : ''),
+            type: 'button',
+            onclick: () => {
+              close();
+              on();
+            }
+          },
+          p && thumbUrl(p) ? h('img', { src: thumbUrl(p), loading: 'lazy' }) : h('i', { class: 'nothumb' }),
+          h('span', null, h('b', { text }), sub ? h('small', { text: sub }) : null)
+        );
+      list.append(row('', 'None', '', () => onPick(undefined)));
+      items.forEach(p =>
+        list.append(
+          row(p, p.split('/').pop(), S.files.has(p) ? 'In this preset' : 'Kustom folder', () => onPick(KF + p))
+        )
+      );
+      list.append(row('', 'Add image from PC…', '', onAdd));
+      document.body.append(list);
+      const r = btn.getBoundingClientRect(),
+        lh = Math.min(380, innerHeight - 20);
+      list.style.maxHeight = lh + 'px';
+      list.style.width = Math.max(260, r.width) + 'px';
+      list.style.left = Math.min(r.left, innerWidth - Math.max(260, r.width) - 8) + 'px';
+      list.style.top = (r.bottom + lh + 8 < innerHeight ? r.bottom + 4 : Math.max(8, r.top - lh - 4)) + 'px';
+      const close = () => {
+        list.remove();
+        document.removeEventListener('pointerdown', off, true);
+      };
+      const off = ev => {
+        if (!list.contains(ev.target)) close();
+      };
+      setTimeout(() => document.addEventListener('pointerdown', off, true));
+    };
+    return btn;
+  }
   function assetEditor(def, val, onChange) {
     const dir = def.t === 'font' ? 'fonts' : def.t === 'iconset' ? 'icons' : 'bitmaps';
+    if (def.t === 'bitmap')
+      return h(
+        'span',
+        { class: 'asset' },
+        bitmapPicker(
+          val,
+          A.list('bitmaps', null),
+          v => onChange(v),
+          () => pickFile('image/*', (f, b) => onChange(addAsset('bitmaps', f, b)))
+        )
+      );
     const re = def.t === 'font' ? /\.(ttf|otf)$/i : def.t === 'iconset' ? /\.ttf$/i : null;
     const items = A.list(dir, re);
     const curP = val && String(val).indexOf(KF) === 0 ? String(val).slice(KF.length) : '';
@@ -1206,8 +2616,8 @@
   }
   function iconPicker(o, onChange) {
     const set = A.iconSet(resolved(o, { k: 'icon_set', d: '' }, ''));
-    if (!set) return toast('Pick an icon set first (it needs its .json next to the .ttf)');
-    const names = Object.keys(set),
+    if (!set) return toast('This icon set has no .json next to its .ttf, so its icons cannot be listed');
+    const names = set._names || Object.keys(set),
       fam = set._font && set._font();
     const grid = h('div', { class: 'icongrid' });
     const q = h('input', { placeholder: 'Search ' + names.length + ' icons…' });
@@ -1244,12 +2654,22 @@
   // formula editor dialog
   function formulaDialog(title, value, onOk) {
     const ta = h('textarea', { class: 'fx', rows: 7, spellcheck: 'false', value: value || '' });
-    const res = h('div', { class: 'fres' });
+    const res = h('div', { class: 'fres' }),
+      warn = h('div', { class: 'fwarn', hidden: true });
     const upd = () => {
       const r = evalNow(ta.value);
       res.textContent = r.value;
       res.classList.toggle('err', !!r.error);
-      if (r.error) res.textContent = (r.value ? r.value + '\n' : '') + '⚠ ' + r.error;
+      warn.innerHTML = '';
+      warn.hidden = !r.errors.length;
+      r.errors.forEach(m => warn.append(h('div', { class: 'fw' }, h('b', { text: '⚠' }), h('span', { text: m }))));
+      if (r.errors.length)
+        warn.append(
+          h('div', {
+            class: 'fwhint',
+            text: 'KLWP shows nothing for a $…$ block it cannot read, so this is what the phone will show too.'
+          })
+        );
     };
     ta.oninput = upd;
     const ins = t => {
@@ -1325,6 +2745,7 @@
           'div',
           { class: 'fmain' },
           ta,
+          warn,
           h('div', { class: 'sub', text: 'Result (live, with simulated device data)' }),
           res
         ),
@@ -1349,6 +2770,7 @@
     if (def.show && !def.show(get)) return null;
     if (def.noStack && opts.inStack) return null;
     if (def.noRoot && opts.inRoot) return null;
+    if (def.onlyRoot && !opts.inRoot) return null;
     if (def.rootDefault && opts.inRoot) def = Object.assign({}, def, { d: def.rootDefault });
     const raw = o[k];
     const val = raw === undefined ? def.d : raw;
@@ -1696,7 +3118,7 @@
     const head = h(
       'div',
       { class: 'ehead' },
-      h('span', { class: 'chip-t t-' + (TYPE_CHIP[m.internal_type] || 'x'), text: TYPE_CHIP[m.internal_type] || '?' }),
+      typeChip(m.internal_type),
       S.path.length
         ? h('input', {
             class: 'etitle',
@@ -2014,10 +3436,7 @@
                 requestRender();
               }
             },
-            h('span', {
-              class: 'chip-t t-' + (TYPE_CHIP[it.internal_type] || 'x'),
-              text: TYPE_CHIP[it.internal_type] || '?'
-            }),
+            typeChip(it.internal_type),
             h('span', { class: 'iname' }, h('b', { text: titleOf(it) }), h('small', { text: summary(it) })),
             (it.internal_animations || []).length
               ? h('span', { class: 'badge', text: 'anim', title: 'Has animations' })
@@ -2029,6 +3448,24 @@
               ? h('span', { class: 'badge', text: pretty(it.config_visible) })
               : null,
             h('span', { class: 'go', text: '›' })
+          ),
+          h(
+            'button',
+            {
+              class: 'selt' + (it[NOSEL] ? ' off' : ''),
+              title: it[NOSEL]
+                ? 'Not selectable in the preview: clicks go to whatever is underneath. Click to make it selectable again.'
+                : 'Selectable in the preview. Click to let clicks pass through it to the items underneath.',
+              onclick: () => {
+                snapshot();
+                if (it[NOSEL]) delete it[NOSEL];
+                else it[NOSEL] = true;
+                S.dirty = true;
+                updateBar();
+                renderEditor();
+              }
+            },
+            h('span', { html: '<svg><use href="#' + (it[NOSEL] ? 'i-nosel' : 'i-sel') + '"/></svg>' })
           )
         )
       )
@@ -2059,7 +3496,7 @@
               requestRender();
             }
           },
-          h('span', { class: 'chip-t big t-' + TYPE_CHIP[t], text: TYPE_CHIP[t] }),
+          typeChip(t, true),
           h('span', { text: SC.MODULES[t].name + (t === 'KomponentModule' ? ' (from .komp file)' : '') })
         )
       )
@@ -2215,9 +3652,23 @@
           { class: 'row grow' + (isF ? ' bound' : ''), style: { paddingLeft: 12 + depth * 18 + 'px' } },
           h(
             'div',
-            { class: 'rl' },
-            h('span', { text: g.title || key }),
-            h('small', { text: pretty(g.type) + ' · gv(' + key + ')' })
+            { class: 'rl gl' },
+            h('span', {
+              class: 'gtype g-' + String(g.type || 'TEXT').toLowerCase(),
+              title: pretty(g.type || 'TEXT') + (isF ? ' (formula)' : ''),
+              html:
+                g.type === 'COLOR'
+                  ? '<i style="background:' +
+                    R.css(isF ? evalNow(g.global_formula || '').value : g.value, '#00000000') +
+                    '"></i>'
+                  : typeSvg(g.type || 'TEXT')
+            }),
+            h(
+              'div',
+              { class: 'rlt' },
+              h('span', { text: g.title || key }),
+              h('small', { text: pretty(g.type) + ' · gv(' + key + ')' })
+            )
           ),
           h('div', { class: 're' }, ed),
           h(
@@ -2405,13 +3856,15 @@
 
   // ------------------------------------------------------------------ file IO
   async function openFile(file) {
+    thumbUrls.forEach(u => u && URL.revokeObjectURL(u));
+    thumbUrls.clear();
     try {
       const z = await JSZip.loadAsync(await file.arrayBuffer());
       const files = new Map();
       for (const n of Object.keys(z.files)) if (!z.files[n].dir) files.set(n, await z.file(n).async('uint8array'));
       const jn =
         [...files.keys()].find(n => /^(preset|komponent)\.json$/.test(n)) ||
-        [...files.keys()].find(n => /\.json$/.test(n) && n.indexOf('/') < 0);
+        [...files.keys()].find(n => /\.json$/.test(n) && n.indexOf('/') < 0 && n !== META_FILE);
       if (!jn) throw new Error('no preset.json inside');
       const txt = new TextDecoder().decode(files.get(jn));
       const p = JSON.parse(txt);
@@ -2420,6 +3873,8 @@
       S.files = files;
       S.jsonName = jn;
       S.fileName = file.name;
+      S.meta = readMeta();
+      applyMeta();
       S.baseUsed = usedThings();
       S.pretty = /\n\s+"/.test(txt.slice(0, 400));
       S.path = [];
@@ -2480,11 +3935,13 @@
     });
     return feats.join(' ');
   }
-  function thumb(w, hh) {
+  // render the preset off screen; fonts and images that are still loading get a moment and a second pass
+  async function renderOff(w, hh) {
     const c = document.createElement('canvas');
     c.width = w;
     c.height = hh;
     const rt = R.newRuntime();
+    rt.globals = new Map(S.views[0].rt.globals);
     const o = {
       pxW: w,
       pxH: hh,
@@ -2492,10 +3949,50 @@
       scroll: Math.min(S.scroll, S.screens - 1),
       locked: false,
       play: false,
-      now: new Date()
+      now: simNow()
     };
     R.render(c, state(), o, rt);
-    return new Promise(res => c.toBlob(b => b.arrayBuffer().then(a => res(new Uint8Array(a))), 'image/jpeg', 0.85));
+    await new Promise(r => setTimeout(r, 400));
+    R.render(c, state(), o, rt);
+    return { c, rt };
+  }
+  const jpeg = c =>
+    new Promise(res => c.toBlob(b => b.arrayBuffer().then(a => res(new Uint8Array(a))), 'image/jpeg', 0.8));
+  async function thumb(w, hh) {
+    return jpeg((await renderOff(w, hh)).c);
+  }
+  async function kompThumb() {
+    const { c, rt } = await renderOff(1080, 1920);
+    let x0 = Infinity,
+      y0 = Infinity,
+      x1 = -Infinity,
+      y1 = -Infinity;
+    rt.hits.forEach(hh => {
+      if (hh.m === root()) return;
+      [
+        [0, 0],
+        [hh.w, 0],
+        [0, hh.h],
+        [hh.w, hh.h]
+      ].forEach(([x, y]) => {
+        const p = hh.mt.transformPoint(new DOMPoint(x, y));
+        x0 = Math.min(x0, p.x);
+        y0 = Math.min(y0, p.y);
+        x1 = Math.max(x1, p.x);
+        y1 = Math.max(y1, p.y);
+      });
+    });
+    x0 = Math.max(0, Math.floor(x0));
+    y0 = Math.max(0, Math.floor(y0));
+    x1 = Math.min(c.width, Math.ceil(x1));
+    y1 = Math.min(c.height, Math.ceil(y1));
+    if (!(x1 > x0 && y1 > y0)) return jpeg(c);
+    const k = 1024 / Math.max(x1 - x0, y1 - y0),
+      out = document.createElement('canvas');
+    out.width = Math.max(1, Math.round((x1 - x0) * k));
+    out.height = Math.max(1, Math.round((y1 - y0) * k));
+    out.getContext('2d').drawImage(c, x0, y0, x1 - x0, y1 - y0, 0, 0, out.width, out.height);
+    return jpeg(out);
   }
   function referenced() {
     const s = new Set();
@@ -2540,6 +4037,27 @@
     }
     return u;
   }
+  // Save as: a new file name (the title stays as it is), then save
+  function saveAs(mode) {
+    const cur =
+      S.fileName && /\.(klwp|komp|kwgt|klck|kntf)$/i.test(S.fileName)
+        ? S.fileName
+        : fileSlug(S.preset.preset_info.title) + '.klwp';
+    const ext = (/\.[a-z]+$/i.exec(cur) || ['.klwp'])[0];
+    form('Save as', [{ k: 'n', l: 'File name', v: cur.replace(/\.[a-z]+$/i, '') }], o => {
+      const n = String(o.n || '')
+        .trim()
+        .replace(/[|\\/:*?"<>]/g, '_')
+        .replace(/\.(klwp|komp|kwgt|klck|kntf)$/i, '');
+      if (!n) {
+        toast('Type a file name');
+        return false;
+      }
+      S.fileName = n + ext;
+      updateBar();
+      exportFile(mode === 'wallpaper' ? 'wallpaper' : HOST ? 'kustom' : undefined);
+    });
+  }
   async function exportFile(mode) {
     const info = S.preset.preset_info;
     info.features = usedFeatures();
@@ -2554,21 +4072,22 @@
       }
     });
     const missing = [...referenced()].filter(p => !S.files.has(p));
-    const v = S.views[0];
-    const port = v.w <= v.h ? [v.w, v.h] : [v.h, v.w];
-    const fresh = ![...S.files.keys()].some(n => /thumb/.test(n)),
-      want = n => fresh || S.files.has(n); // refresh the thumbnails KLWP shows in its preset list
-    try {
-      if (isKomp) {
-        if (want('komponent_thumb.jpg')) S.files.set('komponent_thumb.jpg', await thumb(400, 400));
-      } else {
-        if (want('preset_thumb_portrait.jpg'))
-          S.files.set('preset_thumb_portrait.jpg', await thumb(540, Math.round((540 * port[1]) / port[0])));
-        if (want('preset_thumb_landscape.jpg'))
-          S.files.set('preset_thumb_landscape.jpg', await thumb(Math.round((540 * port[1]) / port[0]), 540));
+    // thumbnails the way KLWP saves them: 1024 pixels on the long side at the preset's own screen shape, in portrait
+    // and landscape (a komponent: the komponent itself, cropped)
+    {
+      const v = S.views[0],
+        pw = info.width || Math.min(v.w, v.h),
+        ph = info.height || Math.max(v.w, v.h),
+        sh = Math.floor((1024 * Math.min(pw, ph)) / Math.max(pw, ph));
+      try {
+        if (isKomp) S.files.set('komponent_thumb.jpg', await kompThumb());
+        else {
+          S.files.set('preset_thumb_portrait.jpg', await thumb(sh, 1024));
+          S.files.set('preset_thumb_landscape.jpg', await thumb(1024, sh));
+        }
+      } catch (e) {
+        /* keep the old thumbnails */
       }
-    } catch (e) {
-      /* keep old thumbs */
     }
     // bundled images get KLWP-style names (IMG + hash, no extension) and every reference follows
     {
@@ -2598,6 +4117,11 @@
       S.jsonName,
       new TextEncoder().encode(S.pretty ? JSON.stringify(S.preset, null, 2) : JSON.stringify(S.preset))
     );
+    // the editor's own per-theme settings ride along as an entry KLWP ignores
+    if (Object.keys(S.meta || {}).length)
+      S.files.set(META_FILE, new TextEncoder().encode(JSON.stringify(Object.assign({ kwlwp: 1 }, S.meta))));
+    else S.files.delete(META_FILE);
+    saveMeta(false);
     // same layout as KLWP's own archives: preset first, then thumbnails, then assets, and no folder entries
     const rank = n => (n === S.jsonName ? 0 : /thumb/.test(n) ? 1 : 2),
       date = new Date(Date.now() - new Date().getTimezoneOffset() * 60000 - 120000); // zip times are local time (JSZip writes the UTC fields); a time in the phone's future makes KLWP refuse the file
@@ -2655,12 +4179,18 @@
   async function loadLibrary(fileList, quiet) {
     let n = 0,
       skipped = 0;
+    const presets = [];
     S.library = new Map();
     for (const f of fileList) {
       let rel = (f.webkitRelativePath || f.name).replace(/\\/g, '/');
       const k = rel.toLowerCase().indexOf('kustom/');
       rel = k >= 0 && (k === 0 || rel[k - 1] === '/') ? rel.slice(k + 7) : rel.split('/').slice(1).join('/');
+      if (/\.(klwp|komp)$/i.test(f.name)) {
+        presets.push({ file: f, path: rel || f.name });
+        continue;
+      }
       if (!rel || /^(wallpapers|komponents|autosave|notifications|widgets|lockscreens)\//i.test(rel)) continue;
+      if (/\.(kwgt|klck|kntf|zip)$/i.test(f.name)) continue;
       if (f.size > 6e7) {
         skipped++;
         continue;
@@ -2676,9 +4206,15 @@
       S.library.set(rel, new Uint8Array(await f.arrayBuffer()));
       n++;
     }
+    if (!quiet) S.presetFiles = presets;
     A.reset();
     renderEditor();
     requestRender();
+    if (S.galleryAfterFolder) {
+      S.galleryAfterFolder = false;
+      browseDialog();
+      return;
+    }
     if (quiet) return;
     toast(
       n +
@@ -2703,17 +4239,34 @@
     sl.disabled = S.screens < 2;
     $('#scrollv').textContent = Math.round((+S.scroll + 1) * 10) / 10 + ' / ' + S.screens;
   }
+  // a file name made from a title: what KLWP does when it saves ("My Theme 2" -> "My_Theme_2")
+  const fileSlug = t =>
+    String(t || 'Untitled')
+      .trim()
+      .replace(/\s+/g, '_')
+      .replace(/[^\w.\-]/g, '_') || 'Untitled';
   function infoDialog() {
     const i = S.preset.preset_info;
-    form(
+    const m = /^(.*?)(\.(klwp|komp|kwgt|klck|kntf))?$/i.exec(S.fileName || ''),
+      ext = m[2] || (/komponent/.test(S.jsonName) ? '.komp' : '.klwp');
+    const ins = form(
       'Preset info',
       [
         { k: 'title', l: 'Title', v: i.title },
+        { k: 'file', l: 'File name (' + ext + ')', v: m[1] || fileSlug(i.title) },
         { k: 'description', l: 'Description', v: i.description, type: 'area' },
         { k: 'author', l: 'Author', v: i.author || '' },
         { k: 'email', l: 'Email', v: i.email || '' }
       ],
       o => {
+        const file = String(o.file || '')
+          .trim()
+          .replace(/\.(klwp|komp|kwgt|klck|kntf)$/i, '')
+          .replace(/[\\/:*?"<>|]/g, '_');
+        if (!file) {
+          toast('The file name cannot be empty');
+          return false;
+        }
         snapshot();
         i.title = o.title;
         i.description = o.description;
@@ -2721,10 +4274,28 @@
         else delete i.author;
         if (o.email) i.email = o.email;
         else delete i.email;
+        const renamed = file + ext !== S.fileName;
+        S.fileName = file + ext;
+        if (renamed) {
+          S.dirty = true;
+          toast(
+            HOST
+              ? 'The next save writes ' + S.fileName + ' (the old file is kept)'
+              : 'Exports are now named ' + S.fileName
+          );
+        }
         updateBar();
         renderEditor();
       }
     );
+    // the file name follows the title while it still matches it
+    let follows = ins.file.value === fileSlug(i.title) || /^Untitled$/i.test(ins.file.value);
+    ins.file.addEventListener('input', () => {
+      follows = ins.file.value === fileSlug(ins.title.value);
+    });
+    ins.title.addEventListener('input', () => {
+      if (follows) ins.file.value = fileSlug(ins.title.value);
+    });
   }
   // ------------------------------------------------------------------ simulated device data
   const ICON_KINDS = [
@@ -3106,9 +4677,14 @@
         ['si.sysca1', 'System accent 1', 'color'],
         ['si.sysca2', 'System accent 2', 'color'],
         ['si.model', 'Device model', 'text'],
-        ['rm.cpu', 'CPU %', 'range', 0, 100],
-        ['rm.used', 'Memory used (MB)', 'num'],
-        ['rm.total', 'Memory total (MB)', 'num']
+        ['rm.cused', 'CPU used %', 'range', 0, 100],
+        ['rm.fcur', 'CPU speed (MHz)', 'num'],
+        ['rm.mused', 'Memory used (MB)', 'num'],
+        ['rm.mtot', 'Memory total (MB)', 'num'],
+        ['rm.fsused', 'Storage used (MB)', 'num'],
+        ['rm.fstot', 'Storage total (MB)', 'num'],
+        ['ts.wrx', 'Wi-Fi downloaded (bytes)', 'num'],
+        ['ts.wtx', 'Wi-Fi uploaded (bytes)', 'num']
       ]
     ],
     [
@@ -3389,6 +4965,19 @@
     if (!SIMSPEC.find(s => s[0] === S.simTab)) S.simTab = SIMSPEC[0][0];
     const sec = SIMSPEC.find(s => s[0] === S.simTab);
     const body = h('div', { class: 'body' });
+    if (!S.useSim)
+      body.append(
+        h(
+          'div',
+          { class: 'note warnnote' },
+          "The preview is showing this PC's real data right now, so changes here only show once you switch back to simulated data (the phone button under the preview). ",
+          h('button', {
+            class: 'btn sm',
+            text: 'Use simulated data',
+            onclick: () => $('#usesim').click()
+          })
+        )
+      );
     ed.append(
       h(
         'div',
@@ -3486,6 +5075,187 @@
     });
   }
 
+  // ---- preset thumbnails for the open dialog: only the thumbnail entry is read out of each archive
+  const THUMB_NAMES = ['preset_thumb_portrait.jpg', 'komponent_thumb.jpg', 'preset_thumb_landscape.jpg'];
+  async function zipThumb(src) {
+    const tailLen = Math.min(src.size, 65557),
+      tail = await src.read(src.size - tailLen, src.size),
+      dv = new DataView(tail.buffer, tail.byteOffset, tail.byteLength);
+    let e = -1;
+    for (let i = tail.length - 22; i >= 0; i--)
+      if (dv.getUint32(i, true) === 0x06054b50) {
+        e = i;
+        break;
+      }
+    if (e < 0) return null;
+    const cdSize = dv.getUint32(e + 12, true),
+      cdOff = dv.getUint32(e + 16, true);
+    const cd = await src.read(cdOff, cdOff + cdSize),
+      c = new DataView(cd.buffer, cd.byteOffset, cd.byteLength),
+      found = {};
+    for (let p = 0; p + 46 <= cd.length && c.getUint32(p, true) === 0x02014b50; ) {
+      const nlen = c.getUint16(p + 28, true),
+        name = new TextDecoder().decode(cd.subarray(p + 46, p + 46 + nlen));
+      if (THUMB_NAMES.indexOf(name) >= 0)
+        found[name] = {
+          method: c.getUint16(p + 10, true),
+          size: c.getUint32(p + 20, true),
+          at: c.getUint32(p + 42, true)
+        };
+      p += 46 + nlen + c.getUint16(p + 30, true) + c.getUint16(p + 32, true);
+    }
+    const ent = THUMB_NAMES.map(n => found[n]).find(Boolean);
+    if (!ent || (ent.method !== 0 && ent.method !== 8)) return null;
+    const lh = await src.read(ent.at, ent.at + 30),
+      l = new DataView(lh.buffer, lh.byteOffset, 30),
+      start = ent.at + 30 + l.getUint16(26, true) + l.getUint16(28, true);
+    let bytes = await src.read(start, start + ent.size);
+    if (ent.method === 8)
+      bytes = new Uint8Array(
+        await new Response(new Blob([bytes]).stream().pipeThrough(new DecompressionStream('deflate-raw'))).arrayBuffer()
+      );
+    return URL.createObjectURL(new Blob([bytes], { type: 'image/jpeg' }));
+  }
+  const fileSrc = f => ({
+    size: f.size,
+    read: (a, b) =>
+      f
+        .slice(a, b)
+        .arrayBuffer()
+        .then(x => new Uint8Array(x))
+  });
+  // a file served by the Windows app: ranged reads, or the whole file once if ranges are not supported
+  const urlSrc = (url, size) => {
+    let whole = null;
+    return {
+      size,
+      async read(a, b) {
+        if (whole) return whole.subarray(a, b);
+        const r = await fetch(url, { headers: { Range: 'bytes=' + a + '-' + (b - 1) }, cache: 'no-store' }),
+          buf = new Uint8Array(await r.arrayBuffer());
+        if (r.status === 206) return buf;
+        whole = buf;
+        return whole.subarray(a, b);
+      }
+    };
+  };
+  const thumbCache = new Map();
+  let thumbBusy = 0;
+  const thumbWait = [];
+  function loadThumb(key, src, img) {
+    const done = url => {
+      if (url) img.src = url;
+      else img.parentNode.classList.add('none');
+    };
+    if (thumbCache.has(key)) return thumbCache.get(key).then(done);
+    const run = () => {
+      thumbBusy++;
+      const pr = zipThumb(src())
+        .catch(() => null)
+        .finally(() => {
+          thumbBusy--;
+          if (thumbWait.length) thumbWait.shift()();
+        });
+      thumbCache.set(key, pr);
+      pr.then(done);
+    };
+    thumbBusy < 4 ? run() : thumbWait.push(run);
+  }
+  // items: [{ name, sub, key, src: () => source, open: () => void }]
+  function presetGallery(title, items, empty, buttons) {
+    const grid = h('div', { class: 'kgrid' });
+    let d;
+    const seen = new IntersectionObserver(
+      es =>
+        es.forEach(e => {
+          if (!e.isIntersecting) return;
+          seen.unobserve(e.target);
+          const it = items[+e.target.dataset.i];
+          loadThumb(it.key, it.src, e.target.querySelector('img'));
+        }),
+      { root: grid, rootMargin: '200px' }
+    );
+    if (!items.length) grid.append(h('div', { class: 'sub', text: empty }));
+    items.forEach((it, i) => {
+      const card = h(
+        'button',
+        {
+          class: 'kcard',
+          title: it.name,
+          onclick: () => {
+            if (S.dirty && !confirm('Discard unsaved changes?')) return;
+            d.close();
+            seen.disconnect();
+            it.open();
+          }
+        },
+        h('div', { class: 'kthumb' }, h('img', { alt: '' })),
+        h('b', { text: it.name.replace(/\.(klwp|komp)$/i, '') }),
+        h('small', { text: it.sub })
+      );
+      card.dataset.i = i;
+      grid.append(card);
+      seen.observe(card);
+    });
+    // search by file name (and title, once its thumbnail has been read)
+    const q = h('input', {
+      class: 'ksearch',
+      type: 'search',
+      placeholder: 'Search ' + items.length + ' file' + (items.length === 1 ? '' : 's') + '…',
+      oninput: () => {
+        const f = q.value.trim().toLowerCase();
+        let shown = 0;
+        grid.querySelectorAll('.kcard').forEach(c => {
+          const it = items[+c.dataset.i],
+            hit = !f || (it.name + ' ' + (it.sub || '')).toLowerCase().indexOf(f) >= 0;
+          c.hidden = !hit;
+          if (hit) shown++;
+        });
+        none.hidden = shown > 0 || !items.length;
+      }
+    });
+    const none = h('div', { class: 'sub', text: 'Nothing matches.', hidden: true });
+    grid.append(none);
+    d = dialog(title, items.length ? [q, grid] : grid, buttons, true);
+    d.box.classList.add('gallery');
+    if (items.length) setTimeout(() => q.focus(), 40);
+  }
+  const sizeText = n => (n > 1e6 ? (n / 1e6).toFixed(1) + ' MB' : Math.max(1, Math.round(n / 1e3)) + ' KB');
+  // the browser version: wallpapers from a folder you choose (your Kustom folder, or any folder of presets)
+  function browseDialog() {
+    const items = (S.presetFiles || [])
+      .slice()
+      .sort((a, b) => b.file.lastModified - a.file.lastModified)
+      .map(p => ({
+        name: p.file.name,
+        key: p.path + '|' + p.file.lastModified + '|' + p.file.size,
+        sub:
+          (/\.komp$/i.test(p.file.name) ? 'Komponent · ' : '') +
+          new Date(p.file.lastModified).toLocaleDateString() +
+          ' · ' +
+          sizeText(p.file.size),
+        src: () => fileSrc(p.file),
+        open: () => openFile(p.file)
+      }));
+    presetGallery(
+      'Open a wallpaper',
+      items,
+      S.presetFiles
+        ? 'No .klwp or .komp files in that folder.'
+        : 'Choose your Kustom folder (or any folder with .klwp files) to see your wallpapers here, or browse for a single file.',
+      [
+        [
+          S.presetFiles ? 'Other folder…' : 'Choose folder…',
+          () => {
+            S.galleryAfterFolder = true;
+            $('#dir').click();
+          }
+        ],
+        ['Browse files…', () => $('#file').click()],
+        ['Cancel']
+      ]
+    );
+  }
   // ---- running inside the Windows app
   async function hostLibrary() {
     const list = await hostList();
@@ -3500,72 +5270,99 @@
     await loadLibrary(files, true);
   }
   function openDialog() {
-    const body = h('div', { class: 'klist' }, h('div', { class: 'sub', text: 'Loading…' }));
-    let d;
     hostList().then(list => {
       S.kustom = list;
-      body.innerHTML = '';
-      const ws = list.filter(f => /^(wallpapers|komponents)\/[^/]+\.(klwp|komp)$/i.test(f.p)).sort((a, b) => b.m - a.m);
-      if (!ws.length)
-        body.append(
-          h('div', {
-            class: 'sub',
-            text: 'Nothing in your Kustom folder yet. Save a wallpaper, or copy .klwp files into its "wallpapers" folder.'
-          })
-        );
-      ws.forEach(f =>
-        body.append(
-          h(
-            'button',
-            {
-              class: 'krow',
-              onclick: () => {
-                if (S.dirty && !confirm('Discard unsaved changes?')) return;
-                d.close();
-                fetch(kustomUrl(f.p), { cache: 'no-store' })
-                  .then(r => r.blob())
-                  .then(b => openFile(new File([b], f.p.split('/').pop())))
-                  .catch(e => toast('Could not open: ' + e.message));
-              }
-            },
-            h('b', { text: f.p.split('/').pop() }),
-            h('small', {
-              text:
-                (/^komp/.test(f.p) ? 'Komponent · ' : '') +
-                new Date(f.m).toLocaleDateString() +
-                ' · ' +
-                (f.s > 1e6 ? (f.s / 1e6).toFixed(1) + ' MB' : Math.max(1, Math.round(f.s / 1e3)) + ' KB')
-            })
-          )
-        )
+      const items = list
+        .filter(f => /^(wallpapers|komponents)\/[^/]+\.(klwp|komp)$/i.test(f.p))
+        .sort((a, b) => b.m - a.m)
+        .map(f => ({
+          name: f.p.split('/').pop(),
+          key: f.p + '|' + f.m + '|' + f.s,
+          sub: (/^komp/.test(f.p) ? 'Komponent · ' : '') + new Date(f.m).toLocaleDateString() + ' · ' + sizeText(f.s),
+          src: () => urlSrc(kustomUrl(f.p), f.s),
+          open: () =>
+            fetch(kustomUrl(f.p), { cache: 'no-store' })
+              .then(r => r.blob())
+              .then(b => openFile(new File([b], f.p.split('/').pop())))
+              .catch(e => toast('Could not open: ' + e.message))
+        }));
+      presetGallery(
+        'Open from your Kustom folder',
+        items,
+        'Nothing in your Kustom folder yet. Save a wallpaper, or copy .klwp files into its "wallpapers" folder.',
+        [['Browse…', () => $('#file').click()], ['Cancel']]
       );
     });
-    d = dialog('Open from your Kustom folder', body, [
-      [
-        'Browse…',
-        () => {
-          $('#file').click();
+  }
+  // the Windows app's editor window has no title bar of its own: the app bar is the title bar
+  function hostWindow() {
+    $('#wmin').onclick = () => hostMsg('win:min');
+    $('#wmax').onclick = () => hostMsg('win:max');
+    $('#wclose').onclick = () => hostMsg('win:close');
+    const bar = $('.appbar'),
+      empty = t => t === bar || (t.classList && (t.classList.contains('sp') || t.classList.contains('wctl')));
+    // used only if the window cannot treat the bar as its caption by itself
+    bar.addEventListener('mousedown', e => {
+      if (e.button === 0 && empty(e.target) && e.detail === 1) hostMsg('win:drag');
+    });
+    bar.addEventListener('dblclick', e => {
+      if (empty(e.target)) hostMsg('win:max');
+    });
+    const grip = h('div', {
+      class: 'topgrip',
+      onmousedown: e => {
+        if (e.button === 0) {
+          e.preventDefault();
+          hostMsg('win:size:top');
         }
-      ],
-      ['Cancel']
-    ]);
+      }
+    });
+    document.body.append(grip);
+    window.KHost.win = st => {
+      const mx = !!(st && st.max);
+      document.body.classList.toggle('maxed', mx);
+      $('#wmax').title = mx ? 'Restore' : 'Maximise';
+      $('#wmax').innerHTML = '<svg><use href="#' + (mx ? 'i-wrestore' : 'i-wmax') + '"/></svg>';
+    };
+    window.addEventListener('keydown', e => {
+      const k = e.key.toLowerCase();
+      if (
+        e.key === 'F5' ||
+        ((e.ctrlKey || e.metaKey) && (k === 'r' || k === 'p' || k === 'f' || k === 'g' || k === 'u'))
+      )
+        e.preventDefault();
+    });
+    window.addEventListener('dragstart', e => {
+      if (!(e.target.closest && e.target.closest('[draggable="true"]'))) e.preventDefault();
+    });
+    hostMsg('win:hello');
+  }
+  // open the wallpaper that is on the desktop right now (the app passes it in the address)
+  async function openCurrent() {
+    const m = /[?&]current=([^&]+)/.exec(location.search);
+    if (!m) return;
+    const url = decodeURIComponent(m[1]),
+      nm = /[?&]name=([^&]+)/.exec(location.search),
+      name = nm ? decodeURIComponent(nm[1]) : url.split('/').pop().split('?')[0];
+    try {
+      const r = await fetch(url, { cache: 'no-store' });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      await openFile(new File([await r.blob()], decodeURIComponent(name)));
+      toast('Opened the current desktop wallpaper: ' + decodeURIComponent(name));
+    } catch (e) {
+      toast('Could not open the current wallpaper: ' + e.message);
+    }
   }
   function hostEditor() {
     document.body.classList.add('hosted');
+    hostWindow();
+    openCurrent();
     $('#open').onclick = openDialog;
     $('#lib').onclick = () => hostMsg('pickkustom');
     $('#lib').title = 'Choose the folder the app and the wallpaper use for presets, fonts, icon sets and images';
     $('#export').onclick = () => exportFile('kustom');
     $('#export').title = 'Save into your Kustom folder (Ctrl+S)';
     $('#export').querySelector('span').textContent = 'Save';
-    $('#export2').onclick = () => exportFile('download');
-    $('#export2').firstChild.textContent = 'Download a copy';
-    const sw = h('button', {
-      id: 'setwall',
-      text: 'Save and use as desktop wallpaper',
-      onclick: () => exportFile('wallpaper')
-    });
-    $('#export2').after(sw);
     hostLibrary().catch(() => {});
   }
   function init() {
@@ -3574,16 +5371,55 @@
       const saved = JSON.parse(localStorage.getItem('klwp-editor-sim') || 'null');
       if (saved && saved.bi && saved.ni && Array.isArray(saved.ni.list)) {
         const base = JSON.parse(JSON.stringify(F.DEFAULT_SIM));
+        // saved before a key was added or renamed: keep the new keys
         Object.keys(saved).forEach(k => {
-          base[k] = saved[k];
+          base[k] =
+            base[k] &&
+            typeof base[k] === 'object' &&
+            !Array.isArray(base[k]) &&
+            saved[k] &&
+            typeof saved[k] === 'object'
+              ? Object.assign({}, base[k], saved[k])
+              : saved[k];
         });
         S.sim = base;
       }
     } catch (e) {
       /* ignore */
     }
+    loadSettings();
+    applySettings();
+    window.addEventListener('storage', e => {
+      if (e.key === SET_KEY) {
+        loadSettings();
+        applySettings();
+      }
+    });
+    $('#settings').onclick = settingsDialog;
+    $('#settings2').onclick = settingsDialog;
+    // live data pushed by the Windows app (what is playing, battery...); in the editor only while live data is on
+    window.KData = o => {
+      Object.keys(o || {}).forEach(k => {
+        if (S.live[k] && typeof S.live[k] === 'object' && !Array.isArray(S.live[k])) Object.assign(S.live[k], o[k]);
+        else S.live[k] = o[k];
+      });
+      if (liveOn()) requestRender();
+    };
+    setInterval(() => {
+      updateAstro();
+      if (liveOn()) requestRender();
+    }, 60000);
     $('#play').classList.toggle('on', S.play);
-    $('#open').onclick = () => $('#file').click();
+    try {
+      const sn = localStorage.getItem('kwlwp-snap');
+      if (sn !== null) S.snap = sn === '1';
+    } catch (e) {
+      /* ignore */
+    }
+    $('#snap').classList.toggle('on', S.snap);
+    $('#touch').classList.toggle('on', S.touch);
+    document.body.classList.toggle('touchmode', S.touch);
+    $('#open').onclick = browseDialog;
     $('#file').onchange = e => {
       if (e.target.files[0]) openFile(e.target.files[0]);
       e.target.value = '';
@@ -3594,6 +5430,7 @@
       if (S.dirty && !confirm('Discard unsaved changes?')) return;
       S.preset = newPreset();
       S.files = new Map();
+      S.meta = {};
       S.fileName = 'Untitled.klwp';
       S.jsonName = 'preset.json';
       S.baseUsed = new Set();
@@ -3611,7 +5448,38 @@
       updateBar();
     };
     $('#export').onclick = () => exportFile();
-    $('#export2').onclick = () => exportFile();
+    // the arrow beside Save: the other ways to save
+    $('#saveMore').onclick = e => {
+      e.stopPropagation();
+      const pop = $('#savemenu');
+      if (!pop.hidden) return (pop.hidden = true);
+      pop.innerHTML = '';
+      const item = (label, kbd, fn) =>
+        pop.append(
+          h(
+            'button',
+            {
+              onclick: () => {
+                pop.hidden = true;
+                fn();
+              }
+            },
+            h('span', { text: label }),
+            kbd ? h('kbd', { text: kbd }) : null
+          )
+        );
+      item(HOST ? 'Save' : 'Export .klwp', 'Ctrl S', () => exportFile(HOST ? 'kustom' : undefined));
+      item('Save as…', 'Ctrl Shift S', saveAs);
+      if (HOST) {
+        item('Save and use as desktop wallpaper', '', () => exportFile('wallpaper'));
+        item('Save as… and use as desktop wallpaper', '', () => saveAs('wallpaper'));
+        item('Download a copy…', '', () => exportFile('download'));
+      }
+      pop.hidden = false;
+    };
+    document.addEventListener('click', () => {
+      $('#savemenu').hidden = true;
+    });
     $('#info').onclick = infoDialog;
     $('#ttl').onclick = infoDialog;
     {
@@ -3716,6 +5584,40 @@
     tgl('#touch', 'touch', () => {
       document.body.classList.toggle('touchmode', S.touch);
     });
+    // which data the editor's preview reads: the simulated phone, or this PC
+    try {
+      const us = localStorage.getItem('kwlwp-usesim');
+      if (us !== null && !WALL) S.useSim = us === '1';
+    } catch (e) {
+      /* ignore */
+    }
+    const simBtn = () => {
+      $('#usesim').classList.toggle('on', S.useSim);
+      $('#usesim').title = S.useSim
+        ? "Showing simulated data (Device data panel). Click to preview with this PC's real data: weather, location, battery, music, system info..."
+        : "Showing this PC's real data. Click to go back to the simulated data from the Device data panel.";
+    };
+    simBtn();
+    tgl('#usesim', 'useSim', () => {
+      try {
+        localStorage.setItem('kwlwp-usesim', S.useSim ? '1' : '0');
+      } catch (e) {
+        /* ignore */
+      }
+      simBtn();
+      scheduleWeather(true);
+      hostMsg('livedata:' + (S.useSim ? 0 : 1));
+      toast(S.useSim ? 'Preview uses the simulated data' : "Preview uses this PC's real data");
+      if (S.panel === 'sim') renderSim();
+    });
+    tgl('#snap', 'snap', () => {
+      try {
+        localStorage.setItem('kwlwp-snap', S.snap ? '1' : '0');
+      } catch (e) {
+        /* ignore */
+      }
+      toast(S.snap ? 'Snapping on (hold Alt while dragging to move freely)' : 'Snapping off');
+    });
     $('#resetg').onclick = () => {
       S.views.forEach(v => v.rt.globals.clear());
       requestRender();
@@ -3732,9 +5634,12 @@
     window.addEventListener('keydown', e => {
       const tag = (e.target.tagName || '').toLowerCase();
       const typing = tag === 'input' || tag === 'textarea' || tag === 'select';
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
+      if (!typing && !document.querySelector('.back') && itemKeys(e)) {
         e.preventDefault();
-        exportFile();
+      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
+        e.preventDefault();
+        if (e.shiftKey) saveAs();
+        else $('#export').click();
       } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'o') {
         e.preventDefault();
         $('#open').click();
@@ -3744,7 +5649,7 @@
       } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y' && !typing) {
         e.preventDefault();
         restore(S.redo, S.undo);
-      } else if (!typing && S.path.length && /^Arrow/.test(e.key) && !document.querySelector('.back')) {
+      } else if (!typing && S.path.length === 1 && /^Arrow/.test(e.key) && !document.querySelector('.back')) {
         const m = cur(),
           d = e.shiftKey ? 10 : 1,
           an = String(m.position_anchor || 'CENTER'),
@@ -3778,7 +5683,18 @@
     renderEditor();
     layoutViews();
     updateBar();
-    window.KApp = { S, openFile, exportFile, renderEditor, requestRender, layoutViews, A };
+    if (HOST) document.addEventListener('contextmenu', ctxMenu);
+    window.KApp = {
+      S,
+      openFile,
+      exportFile,
+      renderEditor,
+      requestRender,
+      layoutViews,
+      A,
+      settingsDialog,
+      SET: () => SET
+    };
     window.KHost = {
       onList: l => {
         const w = listWait;
@@ -3786,6 +5702,12 @@
         if (w) w(Array.isArray(l) ? l : []);
       },
       reload: () => hostLibrary().catch(() => {}),
+      // the answer to a "wg:" download request
+      wg: (id, ok, text) => {
+        const f = webWaits.get(id);
+        webWaits.delete(id);
+        if (f) f(ok ? text : null);
+      },
       say: m => toast(m)
     };
     if (WALL) {
@@ -3853,11 +5775,11 @@
           }
         },
         // real device data from the host, e.g. { bi: { level: 80, charging: 1 } }
-        data: o => {
-          Object.keys(o || {}).forEach(k => {
-            if (S.sim[k] && typeof S.sim[k] === 'object' && !Array.isArray(S.sim[k])) Object.assign(S.sim[k], o[k]);
-            else S.sim[k] = o[k];
-          });
+        data: o => window.KData(o),
+        // the tray menu's "Use the editor's simulated data"
+        useSim: on => {
+          S.useSim = !!on;
+          scheduleWeather(true);
           requestRender();
         }
       };

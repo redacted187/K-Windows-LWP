@@ -1,41 +1,103 @@
-# Rendering notes
+# Rendering rules
 
-These are the rules the renderer follows. They were fitted against screenshots, thumbnails and screen recordings from a real device, so treat them as observations, not a specification. Constants that were fitted to few samples are marked.
+Most of these rules were read out of KLWP 3.82's own code (class names are given so they can be checked again
+against a newer version; see [tools/](../tools) for how). A few still come from comparing renders with screenshots
+from a real phone; those are marked *measured*.
 
-## Layout
+## Units
 
-- 720 Kustom points span the short side of the screen.
-- Default anchor: top for children of the root, centre elsewhere. A stack defaults to vertical, left-aligned.
-- Text set to "fit to box" takes its size from the box height, is left-aligned, and is cut with an ellipsis when too wide.
-- A linear progress bar's length is `style_size` and its thickness `style_height`.
+- One Kustom point is `min(screen width, screen height) / 720` device pixels (`config.u1`).
+- Sizes and offsets are converted with that factor. Shadow blur is not: it is in raw device pixels.
 
-## Shadows
+## Defaults
 
-- An item with an outer shadow reserves room for it: its box grows by twice the shadow's offset in each direction, and the item sits on the side away from the shadow. Stroked shapes also add their stroke width.
-- Blur: sigma in points is `blur * 0.115 + 0.5`.
-- The shadow takes the item's paint colour unless a shadow colour is set.
-- A filled shape's shadow is hollow (cut where the shape is). Text, icons, strokes and fully transparent "glow only" shapes keep the whole blurred copy.
-- KLWP only offers a shadow for items inside a group, not directly on the root.
+A setting that is missing from `preset.json` has KLWP's default value. All of them are in
+[`editor/src/defaults.js`](../editor/src/defaults.js), extracted from KLWP's module spec (`render.spec`, `ye.*`).
+Some that matter often:
 
-## Masks and textures
+| Setting | Default |
+| --- | --- |
+| `fx_shadow_blur` / `_distance` / `_direction` / `_color` | 30 / 15 / 45 / `#FF000000` |
+| `fx_gradient_offset`, `fx_gradient_offset_x`, `fx_gradient_offset_y` | 50 |
+| `shape_width` / `shape_height` | 20 / 20 |
+| `paint_stroke` | 1 |
+| `text_size` / `text_width` / `text_height` | 20 / 200 / 200 |
+| `paint_color` | `#FFFFFFFF`; progress background `#FFAAAAAA` |
+| `background_color` (wallpaper) | `#FF333333` |
+| `*_filter_amount` / `*_filter_color` | 0 / `#FFFF0000` |
+| `position_anchor` | TOP for items on the root, CENTER inside groups |
 
-- "Background" and "Blurred background" masks replace the item's paint with the wallpaper background behind it. They are exclusive with Texture and Shadow, and add Filter, Dim and (blurred only) Blur.
-- Background blur: sigma in points is about `blur * 0.34`. Hue filter: `amount * 1.8` degrees. Both fitted to one sample.
-- Radial and sweep gradients are centred at `width * (0.5 - offsetX / 100)`, `height * (0.5 - offsetY / 100)`.
-- Paint modes act within the nearest group. Multiply only tints what is already there.
+## Positions
 
-## Scroll animations
+- Only items directly on the root use X/Y offsets; inside groups items are placed by anchor and padding.
+- Stacks default to `VERTICAL_LEFT`.
 
-- `SCREENn` is page `n` (counting from 1).
-- "From centre" and "Up to centre" are zero on the centre page and grow away from it. "Before centre" and "After centre" are complete on the centre page.
-- The "In" actions (scale in, fade in, colour filter in) with a one-sided rule run on the opposite side.
-- Distance scrolled per page: `720 * speed * (xscreens - 1) / (screens - 1)`.
+## Scroll animations (`render.AnimationModule`, `options.AnimationRule`, `options.AnimationCenter`)
 
-## Timed animations
+Let `last` be the highest page index and `offset` the launcher's scroll position from 0 to 1.
 
-- Durations are in tenths of a second.
-- Easing follows Android's interpolators. A two-way loop plays the eased move out and then the same eased move back.
+- Centre screen: `SCREENn` is page `n − 1`; `CENTER` is `ceil(last / 2)`; `FIRST` / `LAST` are 0 / `last`;
+  `CENTER_M1..3` / `CENTER_P1..3` count from the centre.
+- Raw distance from the centre page `c`: `d = offset − c / last`.
+- Scroll action: translation = `screen width × (c − page) / last × speed / 100`, clamped to ±`limit` points, along
+  `angle`. With one page nothing moves. Scroll inverted runs the other way.
+- Rules: CENTER is always active; UP_TO_CENTER and BEFORE_CENTER act while `d ≤ 0`, FROM_CENTER and AFTER_CENTER while
+  `d ≥ 0`; BEFORE / AFTER use the page before / after the centre.
+- Other actions use an amount `A` that is 100 on the centre page and falls to 0 after `100 / speed` pages:
+  scale = `max(100 − amount, A) / 100`; scale in = `15 − 14 × that / 100`; fade = `max(100 − amount, A)` (fade in is
+  100 minus that); rotate = `A × 3.6` degrees, limited by `amount`; skew = `(100 − max(100 − amount, |A|)) × 0.02`.
 
-## Morphing Text
+## Shadows (`render.view.q`, `render.PaintModule`)
 
-Drawn as a straight line: vertical scale `sqrt(ratio / 100)`, skew as a shear, spacing in points between letters. Fitted to one sample.
+- KLWP calls Android's `Paint.setShadowLayer(max(1, blur / 4), dist·cos(360° − dir), dist·sin(360° − dir), colour)`.
+  Android turns that radius into a Gaussian sigma of `0.57735 × radius + 0.5` device pixels.
+- The shadow pass repaints the item with the shadow colour in place of the paint colour, underneath the item:
+  - Without a texture the shadow is the shadow colour; a fully opaque shadow colour takes the paint's alpha.
+  - With a gradient or bitmap texture the paint has a shader, so only the shadow colour's alpha counts and the
+    shadow is a blurred copy of the texture itself.
+- The item's box is padded by `distance × (1 + 0.015 × blur)` on the side the shadow falls.
+
+## Gradients (`render.view.q.p`)
+
+- Centre: item centre + (`centre X / Y` − 50)% of the item's size. Colour change from `offset − width/2` to
+  `offset + width/2`.
+- Radial radius: distance from the centre to the farthest corner; for a circle shape, distance to the circle's
+  centre + width / 1.98.
+- Sweep gradients start at the bottom (Android's sweep turned 90°).
+- Colours blend with premultiplied alpha (*measured*: a fade to a transparent colour is linear).
+
+## Morphing Text (`render.view.f`)
+
+- Every letter is its own glyph outline at the origin (`Paint.getTextPath` for that one letter).
+- Ratio `r`: above 0 the letter is squashed to `(100 − r)%` of its height, below 0 to `(100 + r)%` of its width,
+  both about the baseline origin. Skew `k` then slants it by `−k / 100` horizontally per unit of height.
+- Letter `i` starts at the sum of the advances before it plus `i × spacing`. Advances are `Paint.getTextWidths`:
+  measured along the whole line, so kerning counts and a ligature's width (fi, fl, ff…) goes to its first letter.
+- Justify: spacing = `(text width − ink width of the line) / letter count`.
+- Angle `a`: the letters are laid on an arc whose length is the line length and that spans `a` degrees (centre
+  below for positive angles, above for negative), each letter turned to follow it.
+- The item's box is the ink outline of all letters together, plus the stroke width.
+
+## Image filters (`options.BitmapColorFilter`, `utils.p`)
+
+The amount is a 0–100 slider used as `a = amount / 100`.
+
+| Filter | Effect |
+| --- | --- |
+| BW | saturation 0 |
+| SEPIA | saturation 0.95, then R/G/B × 1 / 0.95 / 0.82 (amount ignored) |
+| DESATURATE | saturation `1 − a` |
+| INVERT | inverted (amount ignored) |
+| COLORIZE | grey, then multiplied by the filter colour including its alpha (amount ignored) |
+| HUE | hue rotated by `π × a` |
+| CONTRAST | scale `1 + a` around mid-grey |
+| BRIGHTEN | `a × 255` added to each channel |
+| DARKEN | scale `1 − a` |
+
+"Dim" is applied afterwards as a darken by `dim / 100`.
+
+## Still measured, not read from the code
+
+- Text box padding and FIT_TO_BOX sizing for ordinary Text items.
+- The blur strength of the "blurred background" mask (`≈ 0.34 × blur` points).
+- Timed animation easing curves (Android interpolators).

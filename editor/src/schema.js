@@ -67,12 +67,12 @@
 
   const POSITION = [
     E('position_anchor', 'Anchor', ANCHORS, 'CENTER', { noStack: true, rootDefault: 'TOP' }),
-    N('position_offset_x', 'X Offset', 0, { noStack: true }),
-    N('position_offset_y', 'Y Offset', 0, { noStack: true }),
-    N('position_padding_left', 'Padding Left', 0, { min: 0 }),
-    N('position_padding_top', 'Padding Top', 0, { min: 0 }),
-    N('position_padding_right', 'Padding Right', 0, { min: 0 }),
-    N('position_padding_bottom', 'Padding Bottom', 0, { min: 0 })
+    N('position_offset_x', 'X Offset', 0, { onlyRoot: true }),
+    N('position_offset_y', 'Y Offset', 0, { onlyRoot: true }),
+    N('position_padding_left', 'Padding Left', 0, { min: 0, noRoot: true }),
+    N('position_padding_top', 'Padding Top', 0, { min: 0, noRoot: true }),
+    N('position_padding_right', 'Padding Right', 0, { min: 0, noRoot: true }),
+    N('position_padding_bottom', 'Padding Bottom', 0, { min: 0, noRoot: true })
   ];
   const PAINT = [
     E('paint_style', 'Style', ['FILL', 'STROKE']),
@@ -167,6 +167,7 @@
     ...rot('config_rotate_mode', 'config_rotate_offset'),
     E('config_location', 'Location', O('location', ['DEFAULT', 'PRIMARY', 'ALT1', 'ALT2', 'ALT3'])),
     E('config_fx', 'Layer FX', O('layerfx', ['NONE', 'DROP_SHADOW', 'INNER_SHADOW'])),
+    N('config_alpha', 'Opacity', 100, { min: 0, max: 100 }),
     C('config_fx_fcolor', 'FX color', '#FF000000', { show: not('config_fx', 'NONE') }),
     N('config_fx_radius', 'FX radius', 0, { show: not('config_fx', 'NONE') }),
     N('config_fx_angle', 'FX angle', 0, { show: not('config_fx', 'NONE') }),
@@ -278,13 +279,15 @@
                 'Size',
                 O('fontsize', ['SINGLE_FONT_HEIGHT', 'SINGLE_FIXED_WIDTH', 'FIXED_WIDTH', 'FIT_TO_BOX'])
               ),
-              N('text_size', 'Size', 20, { min: 0, show: is('text_size_type', 'SINGLE_FONT_HEIGHT', 'FIXED_WIDTH') }),
-              N('text_width', 'Width', 100, { min: 0, show: not('text_size_type', 'SINGLE_FONT_HEIGHT') }),
-              N('text_height', 'Height', 100, { min: 0, show: is('text_size_type', 'FIT_TO_BOX') }),
-              N('text_lines', 'Max lines', 0, { min: 0, show: is('text_size_type', 'FIXED_WIDTH') }),
-              E('text_align', 'Align', O('textalign', ['LEFT', 'CENTER', 'RIGHT']), 'LEFT', {
-                show: not('text_size_type', 'SINGLE_FONT_HEIGHT')
+              // order and visibility as in KLWP's TextPrefFragment (FontSize.hasWidth / hasHeight / hasMaxLines)
+              N('text_width', 'Width', 200, {
+                min: 0,
+                show: is('text_size_type', 'FIXED_WIDTH', 'FIT_TO_BOX', 'SINGLE_FIXED_WIDTH')
               }),
+              N('text_height', 'Height', 200, { min: 0, show: is('text_size_type', 'FIT_TO_BOX') }),
+              N('text_lines', 'Max lines', 0, { min: 0, max: 100, show: is('text_size_type', 'FIXED_WIDTH') }),
+              N('text_size', 'Size', 20, { min: 0, show: is('text_size_type', 'SINGLE_FONT_HEIGHT', 'FIXED_WIDTH') }),
+              E('text_align', 'Align', O('textalign', ['LEFT', 'CENTER', 'RIGHT']), 'LEFT'),
               { k: 'text_filter', l: 'Filter', t: 'flags', o: O('textfilter', ['UP', 'LO', 'CAP']), d: [] }
             ],
             rot('text_rotate_mode', 'text_rotate_offset')
@@ -306,13 +309,15 @@
           label: 'Text',
           props: TEXTCORE.concat(
             [
+              // as in KLWP's CurvedTextPrefFragment
               N('text_size', 'Size', 20, { min: 0 }),
-              N('text_width', 'Width', 0, { min: 0 }),
-              N('text_ratio', 'Ratio', 0),
-              N('text_skew', 'Skew', 0),
-              N('text_spacing', 'Spacing', 0),
               E('text_mode', 'Mode', O('curvedtextmode', ['AUTO', 'JUSTIFY'])),
-              { k: 'text_filter', l: 'Filter', t: 'flags', o: O('textfilter', ['UP', 'LO', 'CAP']), d: [] }
+              { k: 'text_filter', l: 'Filter', t: 'flags', o: O('textfilter', ['UP', 'LO', 'CAP']), d: [] },
+              N('text_angle', 'Angle', 0),
+              N('text_width', 'Width', 0, { min: 0, show: is('text_mode', 'JUSTIFY') }),
+              N('text_spacing', 'Spacing', 0, { show: is('text_mode', 'AUTO') }),
+              N('text_ratio', 'Ratio', 0),
+              N('text_skew', 'Skew', 0)
             ],
             rot('text_rotate_mode', 'text_rotate_offset')
           )
@@ -345,16 +350,25 @@
                 'EXAGON',
                 'SLICE',
                 'ARC',
-                'SQUIRCLE'
+                'SQUIRCLE',
+                'PATH'
               ])
             ),
-            N('shape_width', 'Width', 100, { min: 0 }),
-            N('shape_height', 'Height', 100, {
+            // as in KLWP's ShapePrefFragment (Shape.isSymmetric / hasRoundedCorners / hasAngle)
+            N('shape_width', 'Width', 20, { min: 0 }),
+            N('shape_height', 'Height', 20, {
               min: 0,
-              show: is('shape_type', 'RECT', 'OVAL', 'TRIANGLE', 'RTRIANGLE', 'ARC')
+              show: not('shape_type', 'SQUARE', 'CIRCLE', 'EXAGON', 'SQUIRCLE')
             }),
-            N('shape_corners', 'Corners', 0, { min: 0, show: is('shape_type', 'RECT', 'SQUARE') }),
-            N('shape_angle', 'Angle', 0, { show: is('shape_type', 'SLICE', 'ARC') })
+            N('shape_corners', 'Corners', 0, {
+              min: 0,
+              show: is('shape_type', 'RECT', 'SQUARE', 'TRIANGLE', 'RTRIANGLE', 'EXAGON', 'SQUIRCLE')
+            }),
+            N('shape_angle', 'Angle', 45, { show: is('shape_type', 'SLICE', 'ARC') }),
+            T('shape_path', 'Path (SVG)', { show: is('shape_type', 'PATH') }),
+            E('shape_path_scale', 'Scale mode', O('pathscalemode', ['AUTO', 'CENTER_FIT']), 'AUTO', {
+              show: is('shape_type', 'PATH')
+            })
           ].concat(rot('shape_rotate_mode', 'shape_rotate_offset'))
         },
         { id: 'paint', label: 'Paint', props: PAINT },
@@ -372,13 +386,17 @@
           id: 'bitmap',
           label: 'Bitmap',
           props: [
-            { k: 'bitmap_bitmap', l: 'Pick Image', t: 'bitmap', d: '' },
+            // as in KLWP's BitmapPrefFragment
+            { k: 'bitmap_bitmap', l: 'Pick Image', t: 'bitmap', d: '', show: not('bitmap_mode', 'VECTOR') },
+            { k: 'bitmap_svg', l: 'Pick SVG', t: 'bitmap', d: '', show: is('bitmap_mode', 'VECTOR') },
+            E('bitmap_mode', 'Mode', O('bitmapmode', ['BITMAP', 'VECTOR']), 'BITMAP'),
             E(
               'bitmap_scale_mode',
-              'Scale',
+              'Size',
               O('bitmapscalemode', ['FIT_WIDTH', 'FIT_HEIGHT', 'CENTER_FIT', 'CENTER_CROP'])
             ),
-            N('bitmap_width', 'Width', 100, { min: 0 })
+            N('bitmap_width', 'Width', 100, { min: 0, show: not('bitmap_scale_mode', 'FIT_HEIGHT') }),
+            N('bitmap_height', 'Height', 100, { min: 0, show: not('bitmap_scale_mode', 'FIT_WIDTH') })
           ].concat(rot('bitmap_rmode', 'bitmap_rotate'))
         },
         { id: 'fx', label: 'FX', props: BMP('bitmap_').concat(SHADOW) },
@@ -395,7 +413,8 @@
           id: 'bitmap',
           label: 'Bitmap',
           props: [
-            { k: 'bitmap_movie_uri', l: 'Pick Image', t: 'bitmap', d: '' },
+            { k: 'bitmap_movie_uri', l: 'Pick GIF', t: 'bitmap', d: '' },
+            E('bitmap_movie_mode', 'Mode', O('moviemode', ['LOOP', 'STOP']), 'LOOP'),
             N('bitmap_width', 'Width', 100, { min: 0 })
           ].concat(rot('bitmap_rmode', 'bitmap_rotate'))
         },
@@ -415,7 +434,17 @@
           props: [
             { k: 'icon_set', l: 'Set', t: 'iconset', d: '' },
             { k: 'icon_icon', l: 'Icon', t: 'icon', d: '' },
-            N('icon_size', 'Size', 80, { min: 0 })
+            N('icon_size', 'Size', 80, { min: 0 }),
+            // KLWP offers this only for SVG (Iconify) icons, whose name carries the picture after a '#'
+            E(
+              'icon_color_mode',
+              'Color mode',
+              O('iconcolormode', ['DEFAULT', 'COLORIZE', 'INVERT', 'MONOCHROME']),
+              'DEFAULT',
+              {
+                show: g => String(g('icon_icon') || '').indexOf('#') >= 0
+              }
+            )
           ].concat(rot('icon_rotate_mode', 'icon_rotate_offset'))
         },
         { id: 'paint', label: 'Paint', props: PAINT },
@@ -606,7 +635,7 @@
       ]),
       'LAUNCH_APP'
     ),
-    T('intent', 'App / intent', {
+    T('intent', 'App / intent or Windows path', {
       show: is('action', 'LAUNCH_APP', 'LAUNCH_ACTIVITY', 'LAUNCH_SHORTCUT', 'APP_AND_SWITCH', 'SHORTCUT_AND_SWITCH')
     }),
     { k: 'switch', l: 'Switch', t: 'global', d: '', show: g => /SWITCH/.test(g('action')) },
@@ -764,5 +793,16 @@
     'anim:VISUALIZER': 'VISUALIZER'
   };
 
+  // the editor shows KLWP's own default for every setting it knows (see defaults.js)
+  if (G.KDefaults)
+    Object.keys(MODULES).forEach(type =>
+      (MODULES[type].tabs || []).forEach(tab =>
+        (tab.props || []).forEach(p => {
+          if (!p || !p.k || p.k === 'position_anchor') return;
+          const kd = G.KDefaults.get(type, p.k);
+          if (kd !== undefined) p.d = kd;
+        })
+      )
+    );
   G.KSchema = { MODULES, ADDABLE, ANIM, EVENT, KEYPROPS, GLOBAL_TYPES, FUNCS, FEATURES, ANCHORS, optLabel };
 })(window);

@@ -10,6 +10,10 @@ set "LOG=%~dp0build_log.txt"
 set "CSC=%WINDIR%\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
 set "WV2=1.0.2592.51"
 set "REFS=/r:System.dll /r:System.Core.dll /r:System.Drawing.dll /r:System.Windows.Forms.dll"
+rem Windows' media controls (what is playing, play/pause/next) come from the WinRT metadata that ships with Windows 10/11
+set "WINMD=%WINDIR%\System32\WinMetadata"
+set "FW=%WINDIR%\Microsoft.NET\Framework64\v4.0.30319"
+set "RTREFS=/r:%WINMD%\Windows.Foundation.winmd /r:%WINMD%\Windows.Media.winmd /r:%WINMD%\Windows.Storage.winmd /r:%FW%\System.Runtime.WindowsRuntime.dll /r:%FW%\System.Runtime.dll /r:%FW%\System.Runtime.InteropServices.WindowsRuntime.dll /r:%FW%\System.Threading.Tasks.dll /r:%FW%\System.IO.dll"
 echo Building KWLWP... > "%LOG%"
 
 if not exist "%CSC%" (
@@ -36,8 +40,12 @@ taskkill /im KLWPWallpaper.exe /f >nul 2>&1
 del /q dist\KLWPWallpaper.exe >nul 2>&1
 copy /y windows\lib\*.dll dist\ >nul
 copy /y "editor\dist\KLWP Desktop Editor.html" dist\ >nul
-echo ---- app >> "%LOG%"
-"%CSC%" /nologo /target:winexe /platform:x64 /optimize+ /out:dist\KLWPWallpaper.exe /win32manifest:windows\assets\app.manifest /win32icon:windows\assets\app.ico %REFS% /r:windows\lib\Microsoft.Web.WebView2.Core.dll /r:windows\lib\Microsoft.Web.WebView2.WinForms.dll windows\app\*.cs >> "%LOG%" 2>&1
+echo ---- app, with Windows media controls >> "%LOG%"
+"%CSC%" /nologo /target:winexe /platform:x64 /optimize+ /define:WINRT /out:dist\KLWPWallpaper.exe /win32manifest:windows\assets\app.manifest /win32icon:windows\assets\app.ico %REFS% %RTREFS% /r:windows\lib\Microsoft.Web.WebView2.Core.dll /r:windows\lib\Microsoft.Web.WebView2.WinForms.dll windows\app\*.cs >> "%LOG%" 2>&1
+if not exist dist\KLWPWallpaper.exe (
+  echo ---- that did not work here: app with media keys only >> "%LOG%"
+  "%CSC%" /nologo /target:winexe /platform:x64 /optimize+ /out:dist\KLWPWallpaper.exe /win32manifest:windows\assets\app.manifest /win32icon:windows\assets\app.ico %REFS% /r:windows\lib\Microsoft.Web.WebView2.Core.dll /r:windows\lib\Microsoft.Web.WebView2.WinForms.dll windows\app\*.cs >> "%LOG%" 2>&1
+)
 if not exist dist\KLWPWallpaper.exe goto :failed
 
 echo [4/4] Compiling the installer

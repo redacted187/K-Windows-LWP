@@ -17,6 +17,13 @@
   <symbol id="i-compare" viewBox="0 0 24 24"><rect x="3" y="4" width="8" height="16" rx="2"/><rect x="13" y="7" width="8" height="13" rx="2"/></symbol>
   <symbol id="i-full" viewBox="0 0 24 24"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></symbol>
   <symbol id="i-close" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></symbol>
+  <symbol id="i-snap" viewBox="0 0 24 24"><path d="M6 4v7a6 6 0 0 0 12 0V4"/><path d="M6 8h4M14 8h4"/><path d="M10 4v7a2 2 0 0 0 4 0V4"/></symbol>
+  <symbol id="i-sel" viewBox="0 0 24 24"><path d="M6 3.5 18 12l-5.2 1.3L15.5 19l-2.3 1-2.7-5.6L6 18z"/></symbol>
+  <symbol id="i-nosel" viewBox="0 0 24 24"><path d="M6 3.5 18 12l-5.2 1.3L15.5 19l-2.3 1-2.7-5.6L6 18z" opacity=".45"/><path d="M3.5 3.5l17 17"/></symbol>
+  <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></symbol>
+  <symbol id="i-wmin" viewBox="0 0 24 24"><path d="M7 12.5h10"/></symbol>
+  <symbol id="i-wmax" viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="1"/></symbol>
+  <symbol id="i-wrestore" viewBox="0 0 24 24"><rect x="7" y="9" width="8" height="8" rx="1"/><path d="M9.5 9V7.8c0-.4.4-.8.8-.8h6c.4 0 .7.4.7.8v6c0 .4-.4.7-.8.7H15"/></symbol>
 </defs></svg>
 
 <header class="appbar">
@@ -28,7 +35,7 @@
       <button id="lib" title="Point at your Kustom folder so its fonts, icon sets and images can be used">Kustom folder…</button>
       <hr>
       <button id="info">Preset info…</button>
-      <button id="export2">Export .klwp<kbd>Ctrl S</kbd></button>
+      <button id="settings2">Settings…</button>
     </div>
   </div>
   <button class="ttl" id="ttl" title="Preset info"><span id="ptitle"></span><small id="fname"></small></button>
@@ -36,7 +43,9 @@
   <button class="icb" id="undo" title="Undo (Ctrl+Z)"><svg><use href="#i-undo"/></svg></button>
   <button class="icb" id="redo" title="Redo (Ctrl+Y)"><svg><use href="#i-redo"/></svg></button>
   <button class="icb lbl" id="sim" title="Simulated device data: battery, weather, music, notifications…"><svg><use href="#i-sim"/></svg><span>Device data</span></button>
-  <button class="icb lbl pri" id="export" title="Save as a .klwp file (Ctrl+S)"><svg><use href="#i-export"/></svg><span>Export</span></button>
+  <button class="icb" id="settings" title="Settings for every theme: weather, location, units, time zone, desktop behaviour"><svg><use href="#i-gear"/></svg></button>
+  <span class="split"><button class="icb lbl pri" id="export" title="Save as a .klwp file (Ctrl+S)"><svg><use href="#i-export"/></svg><span>Export</span></button><button class="icb pri splitdd" id="saveMore" title="More ways to save" aria-haspopup="true"><svg viewBox="0 0 24 24"><path d="m7 10 5 5 5-5"/></svg></button><div class="pop right" id="savemenu" hidden></div></span>
+  <span class="wctl" id="wctl"><button id="wmin" title="Minimise"><svg><use href="#i-wmin"/></svg></button><button id="wmax" title="Maximise"><svg><use href="#i-wmax"/></svg></button><button id="wclose" class="x" title="Close"><svg><use href="#i-close"/></svg></button></span>
   <input type="file" id="file" accept=".klwp,.komp,.kwgt,.klck,.kntf,.zip" hidden><input type="file" id="dir" webkitdirectory multiple hidden>
 </header>
 
@@ -52,7 +61,9 @@
       <span class="sp"></span>
       <button class="icb" id="lock" title="Preview the locked state"><svg><use href="#i-lock"/></svg></button>
       <button class="icb" id="play" title="Run animations"><svg><use href="#i-play"/></svg></button>
-      <button class="icb" id="touch" title="Touch mode: swipe between screens and tap items like on the phone"><svg><use href="#i-touch"/></svg></button>
+      <button class="icb" id="touch" title="Touch mode: swipe between screens and tap items like on the phone. Turn it off to select and drag items."><svg><use href="#i-touch"/></svg></button>
+      <button class="icb" id="snap" title="Snap to centres and edges while dragging (hold Alt to move freely)"><svg><use href="#i-snap"/></svg></button>
+      <button class="icb" id="usesim" title="Simulated data (Device data panel). Click to preview with this PC's real data instead: time zone, weather, location, battery, music..."><svg><use href="#i-sim"/></svg></button>
       <button class="icb" id="resetg" title="Put globals changed by touch actions back to their saved values"><svg><use href="#i-reset"/></svg></button>
       <i class="vr"></i>
       <button class="icb" id="addview" title="Compare another device side by side"><svg><use href="#i-compare"/></svg></button>
@@ -66,7 +77,10 @@
 <div id="toast"></div>
 <script>/*JSZIP*/</script>
 <script>/*LABELS*/</script>
+<script>/*BUILTIN*/</script>
+<script>/*DEFAULTS*/</script>
 <script>/*FORMULA*/</script>
+<script>/*LIVE*/</script>
 <script>/*SCHEMA*/</script>
 <script>/*RENDER*/</script>
 <script>/*APP*/</script>
