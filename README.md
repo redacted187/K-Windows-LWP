@@ -67,7 +67,7 @@ KWLWP is an independent project. It is not made by, affiliated with or endorsed 
   menus or shortcuts). It opens straight to the wallpaper that is on the desktop, and shares one **Kustom folder** with the wallpaper, laid out like the folder on your phone (`wallpapers`, `komponents`, `fonts`, `icons`, `bitmaps`).
 - A per-user installer, with no administrator rights needed.
 
-![A preset running as the desktop wallpaper](docs/images/wallpaper.png)
+![A preset running as the desktop wallpaper](docs/images/wallpaper-syrup-glass.png)
 
 ## Getting started
 
