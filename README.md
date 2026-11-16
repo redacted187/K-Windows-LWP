@@ -24,10 +24,6 @@ KWLWP is an independent project. It is not made by, affiliated with or endorsed 
 - The editor is included as its own window and shares one **Kustom folder** with the wallpaper, laid out like the folder on your phone (`wallpapers`, `komponents`, `fonts`, `icons`, `bitmaps`).
 - A per-user installer, with no administrator rights needed.
 
-- **Random Personal KLWP Presets**
-
-I threw in some random presets Ive been using for testing. Some of them are broken even on real KLWP so watch out.
-
 ![A preset running as the desktop wallpaper](docs/images/wallpaper.png)
 
 ## Getting started

@@ -1,0 +1,16 @@
+# build output
+/dist/
+/editor/dist/
+/windows/lib/
+build_log.txt
+
+# downloaded while building
+wv2.zip
+wv2pkg/
+
+# editors and OS
+.vs/
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store
