@@ -31,12 +31,18 @@
   }
 
   // ---------- tokenizer ----------
-  function tokenize(src) {
+  function tokenize(src, errs) {
     const t = [];
     let i = 0;
     const n = src.length;
     while (i < n) {
       const c = src[i];
+      // comments, as in KLWP's expression evaluator: /* ... */
+      if (c === '/' && src[i + 1] === '*') {
+        const e = src.indexOf('*/', i + 2);
+        i = e < 0 ? n : e + 2;
+        continue;
+      }
       if (c === ' ' || c === '\n' || c === '\t' || c === '\r') {
         i++;
         continue;
@@ -47,6 +53,7 @@
         while (j < n && src[j] !== '"') {
           s += src[j++];
         }
+        if (j >= n && errs) errs.push({ m: 'unclosed quote' });
         t.push({ k: 'str', v: s });
         i = j + 1;
         continue;
@@ -64,7 +71,8 @@
       }
       let j = i,
         s = '';
-      while (j < n && OPS.indexOf(src[j]) < 0 && src[j] !== '"') s += src[j++];
+      while (j < n && OPS.indexOf(src[j]) < 0 && src[j] !== '"' && !(src[j] === '/' && src[j + 1] === '*'))
+        s += src[j++];
       const raw = s;
       s = s.trim();
       // numbers like 1e-3 are not supported by Kustom; keep plain numerics
@@ -76,8 +84,10 @@
   }
 
   // ---------- parser (precedence climbing) ----------
+  // KLWP 3.82 (org.kustom.lib.parser.e): & and | share the lowest level, then the comparisons, + -, * / %, ^,
+  // and unary minus binds tightest. Everything is left-associative.
   const PREC = {
-    '|': 1,
+    '|': 2,
     '&': 2,
     '=': 3,
     '!=': 3,
@@ -93,10 +103,50 @@
     '%': 5,
     '^': 6
   };
+  // every function KLWP 3.82 registers, with the argument counts it accepts (min, max)
+  const ARGS = {
+    df: [1, 2],
+    mi: [1, 1],
+    li: [1, 1],
+    wi: [1, 1],
+    wf: [2, 3],
+    aq: [1, 1],
+    bi: [1, 2],
+    nc: [1, 2],
+    tf: [1, 2],
+    si: [1, 2],
+    ni: [1, 3],
+    uc: [1, 4],
+    if: [2, 99],
+    tc: [2, 4],
+    ci: [1, 4],
+    mq: [1, 2],
+    ai: [1, 2],
+    wg: [2, 4],
+    ts: [1, 4],
+    fd: [1, 5],
+    rm: [1, 2],
+    bp: [2, 3],
+    mu: [1, 99],
+    ce: [2, 3],
+    cm: [1, 5],
+    dp: [0, 2],
+    gv: [1, 3],
+    gh: [2, 2],
+    br: [2, 2],
+    tu: [1, 4],
+    sh: [1, 3],
+    fl: [4, 5],
+    lv: [1, 2]
+  };
   function parse(src) {
     if (astCache.has(src)) return astCache.get(src);
-    const tk = tokenize(src);
+    const errs = [];
+    const tk = tokenize(src, errs);
     let p = 0;
+    const bad = m => {
+      if (!errs.some(e => e.m === m)) errs.push({ m });
+    };
     const peek = () => tk[p],
       next = () => tk[p++];
     function primary() {
@@ -107,25 +157,33 @@
         if (t.call && peek() && peek().v === '(' && peek().k === 'op') {
           next();
           const args = [];
-          if (peek() && !(peek().k === 'op' && peek().v === ')')) {
+          const isOp = (x, v) => x && x.k === 'op' && x.v === v;
+          if (peek() && !isOp(peek(), ')')) {
             for (;;) {
+              if (isOp(peek(), ',') || isOp(peek(), ')') || !peek()) bad('argument is missing');
               args.push(expr(0));
               const s = peek();
-              if (s && s.k === 'op' && s.v === ',') {
+              if (isOp(s, ',')) {
                 next();
                 continue;
               }
               break;
             }
           }
-          if (peek() && peek().k === 'op' && peek().v === ')') next();
-          return { t: 'call', f: t.v.toLowerCase(), a: args };
+          if (isOp(peek(), ')')) next();
+          else bad('parentheses mismatched');
+          const f = t.v.toLowerCase(),
+            ar = ARGS[f];
+          if (!ar) bad('invalid bracket in expression (' + f + ' is not a KLWP function)');
+          else if (args.length < ar[0] || args.length > ar[1]) bad('invalid argument count for ' + f);
+          return { t: 'call', f, a: args };
         }
         return { t: 'lit', v: t.v, bare: true };
       }
       if (t.v === '(') {
         const e = expr(0);
         if (peek() && peek().v === ')') next();
+        else bad(peek() && peek().v === ',' ? 'separator or parentheses mismatched' : 'parentheses mismatched');
         return { t: 'grp', e };
       }
       if (t.v === '-') {
@@ -166,10 +224,17 @@
     let ast;
     try {
       ast = expr(0);
-      if (p < tk.length) ast = { t: 'err', m: 'Unexpected "' + tk[p].v + '"' };
+      while (p < tk.length) {
+        const t = tk[p++];
+        if (t.k === 'op' && t.v === ')') bad('parentheses mismatched');
+        else if (t.k === 'op' && t.v === ',') bad('function separator found outside of a function');
+        else bad('unexpected "' + t.v + '"');
+      }
     } catch (e) {
       ast = { t: 'err', m: String(e.message || e) };
     }
+    // KLWP refuses the whole expression when javaluator cannot parse it, so the block shows nothing
+    if (errs.length) ast = { t: 'err', m: errs[0].m, errs: errs.slice(0, 1) };
     astCache.set(src, ast);
     return ast;
   }
@@ -685,7 +750,10 @@
       source: 'Battery',
       current: -310,
       fullempty: 0,
-      connected: 0
+      connected: 0,
+      fast: 0,
+      tempu: 'C',
+      date: 0
     },
     wi: {
       temp: 21,
@@ -843,7 +911,12 @@
       spdm: 0,
       spdu: 'kmh',
       lplat: 41.88,
-      lplon: -87.63
+      lplon: -87.63,
+      altm: 181,
+      kmh: 0,
+      mph: 0,
+      timestamp: 0,
+      update: 0
     },
     ai: {
       sunrise: null,
@@ -856,7 +929,9 @@
       mage: 10,
       mill: 78,
       moonrise: null,
-      moonset: null
+      moonset: null,
+      seasonc: 'AUTUMN',
+      zodiacc: 'SCORPIO'
     },
     nc: {
       wifi: 'CONNECTED',
@@ -874,8 +949,18 @@
       aname: '',
       airplane: 0,
       ifip: '192.168.1.20',
+      ifname: 'wlan0',
       simcount: 1,
-      svcstate: 'INSERVICE'
+      svcstate: 'INSERVICE',
+      carrier: 'Carrier',
+      csiga: -95,
+      csigd: -95,
+      sdata: 1,
+      svoice: 1,
+      aaddr: '',
+      abatt: '',
+      cid: '',
+      lac: ''
     },
     si: {
       locked: 0,
@@ -902,18 +987,36 @@
       syscn1: '#FF1C1B1F',
       syscn2: '#FF49454F',
       lnchname: 'Launcher',
-      lnchpkg: ''
+      lnchpkg: '',
+      wpcolor3: '#FF223344',
+      darkwp: 1,
+      wpzoomed: 0,
+      powersave: 0,
+      ambient: 0,
+      visible: 1,
+      alarmd: 0,
+      aver: '14',
+      pkgname: 'org.kustom.wallpaper',
+      pkgver: '3.82',
+      pkgvern: 382,
+      sdpi: 420,
+      sdensity: 2.625
     },
+    // rm(...): KLWP 3.82's resource monitor keys (CPU %, CPU MHz, memory and storage in MB)
     rm: {
-      used: 3120,
-      free: 4880,
-      total: 8000,
+      cidle: 82,
+      csys: 6,
+      cused: 18,
+      cusr: 12,
+      fcur: 1804,
+      fmin: 300,
+      fmax: 2803,
+      mfree: 4880,
+      mtot: 8000,
+      mused: 3120,
       fsfree: 52000,
-      fsused: 76000,
-      fstotal: 128000,
-      cpu: 12,
-      cpuu: 12,
-      up: 86400
+      fstot: 128000,
+      fsused: 76000
     },
     ni: {
       list: [
@@ -984,13 +1087,58 @@
       ]
     },
     uc: { sms: 1, calls: 0, gmail: 2, whatsapp: 0 },
-    fd: { steps: 6240, cals: 310, dista: 4300, time: 3200 },
-    aq: { index: 42, label: 'Good', level: 1, no2: 12, pm10: 18, pm25: 9, o3: 40, co: 0.3, so2: 2 },
+    fd: {
+      steps: 6240,
+      cals: 310,
+      calsr: 1400,
+      calst: 1710,
+      dist: 4.3,
+      dista: 4300,
+      distu: 'km',
+      time: 3200,
+      active: 3200,
+      inactive: 24000,
+      floors: 6,
+      elevation: 18,
+      hr: 72,
+      hravg: 70,
+      hrmin: 54,
+      hrmax: 132,
+      resting: 58,
+      sleep: 26400,
+      sleept: 27000,
+      count: 1
+    },
+    aq: {
+      index: 42,
+      label: 'Good',
+      level: 1,
+      no2: 12,
+      pm10: 18,
+      pm25: 9,
+      o3: 40,
+      co: 0.3,
+      so2: 2,
+      source: 'Simulated',
+      station: '',
+      updated: 0
+    },
     br: {},
     wg: {},
     sh: {},
     mq: { title: 'Queue item', sub: 'Artist' },
-    ts: { trx: 0, ttx: 0, mrx: 0, mtx: 0 },
+    // ts(...): traffic in bytes (total, mobile, wifi; rx = down, tx = up, t = both)
+    ts: {
+      trx: 734003200,
+      ttx: 52428800,
+      tt: 786432000,
+      mrx: 104857600,
+      mtx: 10485760,
+      mt: 115343360,
+      wrx: 629145600,
+      wtx: 41943040,
+      wt: 671088640
+    },
     bp: { default: '#FF607D8B' }
   };
 
@@ -1071,7 +1219,24 @@
     const v = o[fmt(field).toLowerCase()];
     return v === undefined || v === null ? (dflt === undefined ? '' : dflt) : v;
   }
+  // KLWP (parser.e.c): a function that throws is logged as "<name>: <message>" and gives an empty string,
+  // and the rest of the expression carries on
   function callFn(n, c) {
+    try {
+      return callFnRaw(n, c);
+    } catch (e) {
+      if (e && e.kfn) throw e;
+      const m = n.f + ': ' + String((e && e.message) || e || 'unknown').toLowerCase();
+      if (c.errs) {
+        if (c.errs.indexOf(m) < 0) c.errs.push(m);
+        return '';
+      }
+      const er = new Error(m);
+      er.kfn = n.f;
+      throw er;
+    }
+  }
+  function callFnRaw(n, c) {
     const f = n.f,
       A = n.a;
     if (f === 'if') {
@@ -1154,8 +1319,8 @@
         if (k === 'screen') return s.screen || 1;
         if (k === 'screens') return s.screens || 1;
         if (k === 'screenc') return s.screen || 1;
-        if (k === 'screeny') return 1;
-        if (k === 'screensy') return 1;
+        if (k === 'screeny' || k === 'screenyc') return s.screeny || 1;
+        if (k === 'screensy') return s.screensy || 1;
         if (k === 'land') return s.land ? 1 : 0;
         if (k === 'locked') return s.locked ? 1 : 0;
         if (k === 'rotation') return s.land ? 90 : 0;
@@ -1213,8 +1378,15 @@
         if (k === 'moonset') return at(8);
         return '';
       }
-      case 'bp':
-        return simGet(c, 'bp', fmt(a[0]), simGet(c, 'bp', 'default', '#FF607D8B'));
+      case 'bp': {
+        // bp(mode, image[, default]): a colour from the picture's palette, worked out from the real image
+        if (c.palette && a[1] !== undefined && fmt(a[1]) !== '') {
+          const v = c.palette(fmt(a[0]), fmt(a[1]));
+          if (v) return v;
+          return a.length > 2 ? a[2] : simGet(c, 'bp', 'default', '');
+        }
+        return simGet(c, 'bp', fmt(a[0]), a.length > 2 ? a[2] : simGet(c, 'bp', 'default', '#FF607D8B'));
+      }
       case 'tu': {
         const k = fmt(a[0]).toLowerCase();
         const bucket = Math.floor(now.getTime() / 1000 / Math.max(1, timeUnit(a[1])));
@@ -1260,7 +1432,8 @@
         if (f === 'br') return simGet(c, 'br', fmt(a[0]) + '/' + fmt(a[1]));
         if (f === 'mi' && fmt(a[0]).toLowerCase() === 'cover') {
           const m = (c.sim || DEFAULT_SIM).mi || {};
-          return m.coverImg || 'sim:cover';
+          // simulated data falls back to a drawn cover; real data with nothing playing has no cover, as on the phone
+          return m.coverImg || (c.live ? '' : 'sim:cover');
         }
         if (f === 'mi' && fmt(a[0]).toLowerCase() === 'percent') {
           const m = (c.sim || DEFAULT_SIM).mi || {};
@@ -1273,10 +1446,17 @@
           const t = c.readText(fmt(a[0]));
           if (t !== null) return t;
         }
+        // real data: fetch the address (through the Windows app when there is one) and read it like KLWP does
+        if (f === 'wg' && c.webGet) {
+          const v = c.webGet(fmt(a[0]), fmt(a[1] === undefined ? 'txt' : a[1]), a.slice(2).map(fmt));
+          if (v !== undefined) return v;
+        }
         const o = (c.sim || DEFAULT_SIM)[f] || {};
         const v = o[a.map(fmt).join(',')];
         return v === undefined ? (o['*'] === undefined ? '' : o['*']) : v;
       }
+      case 'gh':
+        return ''; // global history: needs the phone
       default:
         throw new Error('Unknown function ' + f + '()');
     }
@@ -1295,22 +1475,55 @@
   function evaluate(tpl, c) {
     if (typeof tpl !== 'string') return { value: fmt(tpl), error: null };
     if (tpl.indexOf('$') < 0) return { value: tpl, error: null };
-    c = Object.assign({}, c, { locals: new Map() });
-    let out = '',
-      error = null;
+    const errs = [];
+    c = Object.assign({}, c, { locals: new Map(), errs });
+    let out = '';
     for (const p of splitTemplate(tpl)) {
       if (!p.expr) {
         out += p.src;
         continue;
       }
       if (p.src.trim() === '') continue;
+      const ast = parse(p.src);
+      if (ast.t === 'err') {
+        (ast.errs || [{ m: ast.m }]).forEach(e => {
+          const m = 'err: ' + String(e.m).toLowerCase();
+          if (errs.indexOf(m) < 0) errs.push(m);
+        });
+        continue;
+      }
       try {
-        out += fmt(evalNode(parse(p.src), c));
+        out += fmt(evalNode(ast, c));
       } catch (e) {
-        error = error || String(e.message || e);
+        const m = (e && e.kfn ? '' : 'err: ') + String((e && e.message) || e).toLowerCase();
+        if (errs.indexOf(m) < 0) errs.push(m);
       }
     }
-    return { value: out, error };
+    return { value: out, error: errs.length ? errs[0] : null, errors: errs };
+  }
+  // syntax problems only (no evaluation), in KLWP's wording; [] when the formula is fine
+  function check(tpl) {
+    const out = [];
+    if (typeof tpl !== 'string' || tpl.indexOf('$') < 0) return out;
+    {
+      let q = false,
+        d = 0;
+      for (const ch of tpl) {
+        if (ch === '"' && d % 2) q = !q;
+        else if (ch === '$' && !q) d++;
+      }
+      if (d % 2) out.push('err: a $ is not closed, so the end of the text is shown as plain text');
+    }
+    for (const p of splitTemplate(tpl))
+      if (p.expr && p.src.trim()) {
+        const a = parse(p.src);
+        if (a.t === 'err')
+          (a.errs || [{ m: a.m }]).forEach(e => {
+            const m = 'err: ' + String(e.m).toLowerCase();
+            if (out.indexOf(m) < 0) out.push(m);
+          });
+      }
+    return out;
   }
   function usedFunctions(tpl) {
     const s = new Set();
@@ -1344,5 +1557,18 @@
     return s;
   }
 
-  G.KFormula = { evaluate, parse, usedFunctions, parseColor, colorStr, isNum, num, fmt, DEFAULT_SIM, dateFormat };
+  G.KFormula = {
+    evaluate,
+    check,
+    ARGS,
+    parse,
+    usedFunctions,
+    parseColor,
+    colorStr,
+    isNum,
+    num,
+    fmt,
+    DEFAULT_SIM,
+    dateFormat
+  };
 })(typeof window !== 'undefined' ? window : globalThis);

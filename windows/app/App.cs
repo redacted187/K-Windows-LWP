@@ -31,7 +31,11 @@ namespace KlwpWallpaper
         Timer timer;
         IntPtr hook = IntPtr.Zero;
         Native.HookProc hookProc;   // kept in a field so it is not collected
-        bool dragging, userPaused, covered, pausedSent;
+        bool dragging, userPaused, covered, pausedSent, swallowUp, noSelectRect, mediaBusy;
+        string lastMedia = "", lastCover = null;
+        Timer mediaTimer;
+        int sysTick;
+        bool sysBusy;
         int lastMoveTick, tickCount;
         DateTime presetStamp = DateTime.MinValue;
         string logPath;
@@ -46,6 +50,7 @@ namespace KlwpWallpaper
             try { File.WriteAllText(logPath, "started " + DateTime.Now + "\r\n"); } catch (Exception) { }
             LoadConfig();
             userPaused = Get("paused", "0") == "1";
+            noSelectRect = false;   // the "no selection box" option was removed
 
             tray = new NotifyIcon();
             try { AppIcon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch (Exception) { }
@@ -59,25 +64,97 @@ namespace KlwpWallpaper
             BuildMenu();
 
             if (EditorPath() == null) Balloon("KLWP Wallpaper", "\"KLWP Desktop Editor.html\" was not found next to KLWPWallpaper.exe.");
-            CreateForm();
-
+            // editor first: the desktop wallpaper only runs while "Apply to desktop" is on
+            if (Get("applied", "") == "") Set("applied", Get("preset", "") != "" ? "1" : "0");
             hookProc = new Native.HookProc(MouseHook);
-            hook = Native.SetWindowsHookEx(14, hookProc, Native.GetModuleHandle(null), 0);   // WH_MOUSE_LL
-            Log("hook=" + hook);
+            if (Applied) CreateForm();
+            FixStartupEntry();
 
             timer = new Timer();
             timer.Interval = 1000;
             timer.Tick += delegate { Tick(); };
             timer.Start();
 
+            // what is playing on the PC, for mi(...) in the wallpaper and the editor
+            mediaTimer = new Timer();
+            mediaTimer.Interval = 500;
+            mediaTimer.Tick += delegate { PollMedia(); };
+            if (MediaSession.Available) mediaTimer.Start();
+
+            // this PC's own data for rm(), si(), nc(), ts(): every 3 seconds while something shows it
+            Timer sysTimer = new Timer();
+            sysTimer.Interval = 3000;
+            sysTimer.Tick += delegate { PollSystem(); };
+            sysTimer.Start();
+            Log("media session support: " + MediaSession.Available);
+
             if (openEditor) OpenEditor();
-            else if (Get("preset", "") == "" || !File.Exists(Get("preset", "")))
+        }
+
+        // ---------------------------------------------------------------- the desktop wallpaper, on or off
+        public bool Applied { get { return Get("applied", "0") == "1"; } }
+
+        // turns the desktop wallpaper on or off; off closes its page completely, so it uses nothing at all
+        void ApplyDesktop(bool on)
+        {
+            Set("applied", on ? "1" : "0");
+            if (on)
             {
-                string[] have = new string[0];
-                try { have = Directory.GetFiles(Path.Combine(KustomDir, "wallpapers"), "*.klwp"); } catch (Exception) { }
-                if (have.Length > 0) Balloon("KLWP Wallpaper", "Right-click the K icon near the clock and pick one of your wallpapers.");
-                else Balloon("KLWP Wallpaper", "Right-click the K icon near the clock to choose a wallpaper, or open the editor to make one.");
+                if (Get("preset", "") == "" || !File.Exists(Get("preset", "")))
+                {
+                    ChooseWallpaper();
+                    if (Get("preset", "") == "") { Set("applied", "0"); return; }
+                }
+                if (form == null || form.IsDisposed) CreateForm();
+                else { presetStamp = DateTime.MinValue; LoadPreset(); }
             }
+            else DestroyForm();
+        }
+
+        // picking a wallpaper from the tray puts it on the desktop
+        void ShowOnDesktop()
+        {
+            Set("applied", "1");
+            if (form == null || form.IsDisposed) CreateForm();
+            else LoadPreset();
+        }
+
+        void DestroyForm()
+        {
+            try { if (hook != IntPtr.Zero) { Native.UnhookWindowsHookEx(hook); hook = IntPtr.Zero; } } catch (Exception) { }
+            try { if (form != null && !form.IsDisposed) form.Dispose(); } catch (Exception) { }
+            form = null;
+            dragging = false;
+            try { Native.SystemParametersInfo(20, 0, null, 3); } catch (Exception) { }   // put the normal Windows wallpaper back on screen
+            Log("desktop wallpaper off");
+        }
+
+        // starting with Windows runs quietly in the tray; an older entry without the flag is updated
+        void FixStartupEntry()
+        {
+            try
+            {
+                using (RegistryKey k = Registry.CurrentUser.OpenSubKey(RunKey, true))
+                {
+                    if (k == null) return;
+                    object v = k.GetValue("KLWPWallpaper");
+                    if (v != null && v.ToString().IndexOf("--background", StringComparison.Ordinal) < 0)
+                        k.SetValue("KLWPWallpaper", "\"" + Application.ExecutablePath + "\" --background");
+                }
+            }
+            catch (Exception) { }
+        }
+
+        // asks WebView2 to keep a page's memory small while nobody is looking at it (set by name: newer runtimes only)
+        public void MemoryLow(WebView2 web, bool low)
+        {
+            try
+            {
+                if (web == null || web.CoreWebView2 == null) return;
+                System.Reflection.PropertyInfo pi = web.CoreWebView2.GetType().GetProperty("MemoryUsageTargetLevel");
+                if (pi != null && pi.CanWrite) pi.SetValue(web.CoreWebView2, Enum.Parse(pi.PropertyType, low ? "Low" : "Normal"), null);
+            }
+            catch (Exception) { }
         }
 
         // ---------------------------------------------------------------- settings
@@ -166,7 +243,73 @@ namespace KlwpWallpaper
             core.Settings.AreDevToolsEnabled = false;
             core.Settings.IsStatusBarEnabled = false;
             core.Settings.IsZoomControlEnabled = false;
-            if (!isEditor) core.Settings.AreDefaultContextMenusEnabled = false;
+            // an app, not a browser: no Edge menus, shortcuts, gestures, autofill or download bubble
+            core.Settings.AreDefaultContextMenusEnabled = false;
+            try { core.Settings.AreBrowserAcceleratorKeysEnabled = false; } catch (Exception) { }
+            try { core.Settings.IsPinchZoomEnabled = false; } catch (Exception) { }
+            try { core.Settings.IsSwipeNavigationEnabled = false; } catch (Exception) { }
+            try { core.Settings.IsGeneralAutofillEnabled = false; } catch (Exception) { }
+            try { core.Settings.IsPasswordAutosaveEnabled = false; } catch (Exception) { }
+            try { core.Settings.IsBuiltInErrorPageEnabled = false; } catch (Exception) { }
+            // lets "app-region: drag" in the page work as the window's title bar
+            // (set by name so an older WebView2 runtime simply goes without)
+            if (isEditor) SetByName(core.Settings, "IsNonClientRegionSupportEnabled", true);
+            core.PermissionRequested += delegate(object s, CoreWebView2PermissionRequestedEventArgs e)
+            {
+                e.State = e.PermissionKind.ToString() == "ClipboardRead" ? CoreWebView2PermissionState.Allow : CoreWebView2PermissionState.Deny;
+            };
+            core.NewWindowRequested += delegate(object s, CoreWebView2NewWindowRequestedEventArgs e)
+            {
+                e.Handled = true;
+                OpenExternal(e.Uri);
+            };
+            core.NavigationStarting += delegate(object s, CoreWebView2NavigationStartingEventArgs e)
+            {
+                if (e.Uri.StartsWith(Origin + "/", StringComparison.OrdinalIgnoreCase) || e.Uri.StartsWith("about:", StringComparison.OrdinalIgnoreCase) || e.Uri.StartsWith("data:", StringComparison.OrdinalIgnoreCase) || e.Uri.StartsWith("blob:", StringComparison.OrdinalIgnoreCase)) return;
+                e.Cancel = true;
+                OpenExternal(e.Uri);
+            };
+            if (isEditor && sender is Form)
+            {
+                Form owner = (Form)sender;
+                // "Download a copy": a normal Save As box instead of the browser's download bubble
+                core.DownloadStarting += delegate(object s, CoreWebView2DownloadStartingEventArgs e)
+                {
+                    CoreWebView2Deferral def = e.GetDeferral();
+                    owner.BeginInvoke(new Action(delegate
+                    {
+                        try
+                        {
+                            using (SaveFileDialog d = new SaveFileDialog())
+                            {
+                                d.FileName = Path.GetFileName(e.ResultFilePath);
+                                string ext = Path.GetExtension(d.FileName);
+                                d.Filter = (ext != "" ? "*" + ext + "|*" + ext + "|" : "") + "All files (*.*)|*.*";
+                                d.InitialDirectory = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
+                                if (d.ShowDialog(owner) == DialogResult.OK) { e.ResultFilePath = d.FileName; e.Handled = true; }
+                                else e.Cancel = true;
+                            }
+                        }
+                        catch (Exception ex) { Log("download: " + ex.Message); }
+                        finally { def.Complete(); }
+                    }));
+                };
+            }
+            // a page that crashes (or runs out of memory) starts again instead of leaving a dead window
+            core.ProcessFailed += delegate(object s, CoreWebView2ProcessFailedEventArgs e)
+            {
+                Log((isEditor ? "editor" : "wallpaper") + " page failed: " + e.ProcessFailedKind);
+                Timer t = new Timer();
+                t.Interval = 1500;
+                t.Tick += delegate
+                {
+                    t.Stop();
+                    t.Dispose();
+                    if (isEditor) { if (editor != null && !editor.IsDisposed) editor.Navigate(); }
+                    else if (Applied) CreateForm();
+                };
+                t.Start();
+            };
             InstallPlayer();
             core.SetVirtualHostNameToFolderMapping("klwp.wallpaper", KustomDir, CoreWebView2HostResourceAccessKind.Allow);
             core.WebMessageReceived += delegate(object s, CoreWebView2WebMessageReceivedEventArgs e)
@@ -178,12 +321,24 @@ namespace KlwpWallpaper
             };
         }
 
+        void SetByName(object target, string prop, object value)
+        {
+            try
+            {
+                System.Reflection.PropertyInfo pi = target.GetType().GetProperty(prop);
+                if (pi != null && pi.CanWrite) pi.SetValue(target, value, null);
+                else Log(prop + ": not in this WebView2 version");
+            }
+            catch (Exception ex) { Log(prop + ": " + (ex.InnerException != null ? ex.InnerException.Message : ex.Message)); }
+        }
+
         void ScriptTo(bool toEditor, string js)
         {
             if (toEditor) { if (editor != null && !editor.IsDisposed) editor.Script(js); }
             else if (form != null && !form.IsDisposed) form.ScriptAlways(js);
         }
 
+        public static string Json(string v) { return JsonString(v); }
         static string JsonString(string v)
         {
             StringBuilder sb = new StringBuilder("\"");
@@ -269,7 +424,8 @@ namespace KlwpWallpaper
             {
                 File.WriteAllBytes(path, Convert.FromBase64String(body.Substring(b + 1)));
                 Log("saved " + path);
-                if (use && sub == "wallpapers") { Set("preset", path); presetStamp = DateTime.MinValue; LoadPreset(); }
+                if (use && sub == "wallpapers") { Set("preset", path); presetStamp = DateTime.MinValue; ApplyDesktop(true); }
+                else if (string.Equals(path, Get("preset", ""), StringComparison.OrdinalIgnoreCase)) { presetStamp = DateTime.MinValue; LoadPreset(); }   // the wallpaper on the desktop follows its saved file
             }
             catch (Exception ex)
             {
@@ -308,6 +464,12 @@ namespace KlwpWallpaper
             catch (Exception) { }
             dragging = false;
             pausedSent = false;
+            if (hook == IntPtr.Zero)
+            {
+                hook = Native.SetWindowsHookEx(14, hookProc, Native.GetModuleHandle(null), 0);   // WH_MOUSE_LL
+                Log("hook=" + hook);
+            }
+            lastRearm = Environment.TickCount;
             form = new WallpaperForm(this);
             form.Bounds = TargetScreen().Bounds;
             IntPtr h = form.Handle;        // create the window, then move it behind the icons before it is ever shown
@@ -322,28 +484,144 @@ namespace KlwpWallpaper
             if (m == "list") { ScriptTo(fromEditor, "KHost.onList(" + ListKustom() + ");"); }
             else if (m.StartsWith("save:")) SaveFromEditor(m.Substring(5));
             else if (m == "pickkustom") PickKustom();
+            else if (m.StartsWith("launch:")) Launch(m.Substring(7));
+            else if (m.StartsWith("music:")) Media(m.Substring(6));
+            else if (m.StartsWith("wg:")) WebGet(m.Substring(3), fromEditor);
+            else if (m.StartsWith("wgx:")) WebGetEx(m.Substring(4), fromEditor);
+            else if (m.StartsWith("livedata:")) { lastMedia = ""; lastCover = null; PollSystem(); }
+            else if (m.StartsWith("link:")) OpenExternal(m.Substring(5).Trim());
+            else if (m.StartsWith("win:")) { if (fromEditor && editor != null && !editor.IsDisposed) editor.WindowCommand(m.Substring(4)); }
             else if (fromEditor) { }
             else if (m == "ready")
             {
                 form.Ready = true;
+                form.Script("KWall.useSim(" + (Get("usesim", "0") == "1" ? "true" : "false") + ");");
                 SendBattery();
                 LoadPreset();
+                lastMedia = ""; lastCover = null;
             }
             else if (m.StartsWith("loaded:")) Log("page " + m);
             else if (m.StartsWith("error:")) { Log("page " + m); Balloon("KLWP Wallpaper", "Could not load the wallpaper: " + m.Substring(6)); }
-            else if (m.StartsWith("music:")) Media(m.Substring(6));
-            else if (m.StartsWith("link:"))
+        }
+
+        void OpenExternal(string url)
+        {
+            url = (url ?? "").Trim();
+            if (url.StartsWith("http://", StringComparison.OrdinalIgnoreCase) || url.StartsWith("https://", StringComparison.OrdinalIgnoreCase) || url.StartsWith("mailto:", StringComparison.OrdinalIgnoreCase))
             {
-                string url = m.Substring(5).Trim();
-                if (url.StartsWith("http://", StringComparison.OrdinalIgnoreCase) || url.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
-                {
-                    try { Process.Start(url); } catch (Exception) { }
-                }
+                try { Process.Start(url); } catch (Exception) { }
             }
         }
 
-        // music touch actions drive whatever is playing on the PC through the media keys
+        // A "launch app" touch action whose App / intent field holds a Windows path: open it the way Explorer would.
+        // Accepts  C:\path\file.exe,  "C:\path with spaces\app.exe" --arguments,  %APPDATA%\..., \\server\share\...
+        // A preset may come from anywhere, so each program is confirmed once before it is ever started.
+        void Launch(string spec)
+        {
+            spec = (spec == null ? "" : spec).Trim();
+            string path = spec, args = "";
+            if (spec.StartsWith("\""))
+            {
+                int end = spec.IndexOf('"', 1);
+                if (end < 2) return;
+                path = spec.Substring(1, end - 1);
+                args = spec.Substring(end + 1).Trim();
+            }
+            path = Environment.ExpandEnvironmentVariables(path);
+            if (!File.Exists(path) && !Directory.Exists(path))
+            {
+                Balloon("KLWP Wallpaper", "Nothing to open at " + path);
+                return;
+            }
+            string key = (path + "\u0001" + args).ToLowerInvariant();
+            List<string> allowed = new List<string>(Get("allowed", "").Split(new char[] { '\u0002' }, StringSplitOptions.RemoveEmptyEntries));
+            if (!allowed.Contains(key))
+            {
+                // Ask after this message has been handled, with an ordinary dialog. The question used to be a
+                // "default desktop" message box, which stops this thread from handling any messages, and this thread
+                // also answers the mouse hook: the cursor lagged until it was answered and Windows then removed the
+                // hook, so the wallpaper stopped seeing clicks.
+                if (launchAsking) return;
+                launchAsking = true;
+                string what = path + (args != "" ? "\n" + args : "");
+                string p0 = path, a0 = args;
+                Timer later = new Timer();
+                later.Interval = 1;
+                later.Tick += delegate
+                {
+                    later.Stop();
+                    later.Dispose();
+                    DialogResult ok;
+                    using (Form top = new Form())
+                    {
+                        top.TopMost = true;
+                        top.ShowInTaskbar = false;
+                        top.FormBorderStyle = FormBorderStyle.None;
+                        top.StartPosition = FormStartPosition.Manual;
+                        top.Size = new System.Drawing.Size(1, 1);
+                        top.Location = new System.Drawing.Point(-2000, -2000);
+                        top.Show();
+                        top.Activate();
+                        ok = MessageBox.Show(top, "A touch action in your wallpaper wants to open:\n\n" + what + "\n\nAllow it? You will not be asked again for this one.",
+                            "KLWP Wallpaper", MessageBoxButtons.YesNo, MessageBoxIcon.Question, MessageBoxDefaultButton.Button2);
+                    }
+                    launchAsking = false;
+                    RearmHook();
+                    if (ok != DialogResult.Yes) return;
+                    List<string> now = new List<string>(Get("allowed", "").Split(new char[] { '\u0002' }, StringSplitOptions.RemoveEmptyEntries));
+                    if (!now.Contains(key)) now.Add(key);
+                    Set("allowed", string.Join("\u0002", now.ToArray()));
+                    StartProgram(p0, a0);
+                };
+                later.Start();
+                return;
+            }
+            StartProgram(path, args);
+        }
+
+        bool launchAsking;
+        void StartProgram(string path, string args)
+        {
+            try
+            {
+                ProcessStartInfo si = new ProcessStartInfo(path, args);
+                si.UseShellExecute = true;
+                if (File.Exists(path)) si.WorkingDirectory = Path.GetDirectoryName(path);
+                Process.Start(si);
+                Log("launch " + path + " " + args);
+            }
+            catch (Exception ex)
+            {
+                Log("launch: " + ex.Message);
+                Balloon("KLWP Wallpaper", "Could not open " + path + ": " + ex.Message);
+            }
+        }
+
+        // music touch actions drive whatever is playing on the PC: through Windows' media controls when
+        // they are available (exactly like the volume flyout's buttons), otherwise by pressing the media keys
         void Media(string action)
+        {
+            Log("music " + action);
+            if (action == "OPEN_APP") return;
+            if (MediaSession.Available && action.IndexOf("VOLUME", StringComparison.Ordinal) < 0)
+            {
+                string a = action;
+                Task.Run(delegate
+                {
+                    if (!MediaSession.Command(a)) MediaKey(a);
+                });
+                lastMedia = "";
+                // look again shortly, so the play/pause state follows straight away
+                Timer again = new Timer();
+                again.Interval = 350;
+                again.Tick += delegate { again.Stop(); again.Dispose(); lastMedia = ""; PollMedia(); };
+                again.Start();
+                return;
+            }
+            MediaKey(action);
+        }
+
+        void MediaKey(string action)
         {
             byte vk = 0;
             if (action.IndexOf("PLAY", StringComparison.Ordinal) >= 0 || action.IndexOf("PAUSE", StringComparison.Ordinal) >= 0) vk = 0xB3;
@@ -352,8 +630,177 @@ namespace KlwpWallpaper
             else if (action.IndexOf("VOLUME_UP", StringComparison.Ordinal) >= 0) vk = 0xAF;
             else if (action.IndexOf("VOLUME_DOWN", StringComparison.Ordinal) >= 0) vk = 0xAE;
             if (vk == 0) return;
-            Native.keybd_event(vk, 0, 0, UIntPtr.Zero);
-            Native.keybd_event(vk, 0, 2, UIntPtr.Zero);
+            Native.TapKey(vk);
+        }
+
+        async void PollMedia()
+        {
+            if (mediaBusy) return;
+            bool wallUp = form != null && !form.IsDisposed && form.Ready && !userPaused && !covered;
+            bool editorUp = editor != null && !editor.IsDisposed && editor.WindowState != FormWindowState.Minimized;
+            if (!wallUp && !editorUp) return;
+            mediaBusy = true;
+            try
+            {
+                string mi = await Task.Run(delegate { return MediaSession.InfoJson(); });
+                bool playing = mi != null;
+                if (mi == null) mi = "{\"state\":\"STOPPED\",\"title\":\"\",\"artist\":\"\",\"album\":\"\",\"pos\":0,\"len\":0}";
+                string cover = playing ? MediaSession.Cover : "";
+                // the cover goes first, and only when it is a different picture (it can be hundreds of KB)
+                if (cover != lastCover)
+                {
+                    lastCover = cover;
+                    string cj = "window.KData&&KData({mi:{coverImg:" + Json(cover) + "}});";
+                    if (form != null && !form.IsDisposed) form.Script(cj);
+                    if (playing && editor != null && !editor.IsDisposed) editor.Script(cj);
+                    lastMedia = null;
+                }
+                if (mi != lastMedia)
+                {
+                    lastMedia = mi;
+                    string js = "window.KData&&KData({mi:" + mi + "});";
+                    if (form != null && !form.IsDisposed) form.Script(js);
+                    // the editor keeps its simulated song while nothing is playing on the PC
+                    if (playing && editor != null && !editor.IsDisposed) editor.Script(js);
+                }
+            }
+            catch (Exception ex) { Log("media: " + ex.Message); }
+            finally { mediaBusy = false; }
+        }
+
+        // send a script to both pages (the editor only uses it while it shows real data)
+        void ScriptBoth(string js)
+        {
+            if (form != null && !form.IsDisposed) form.Script(js);
+            if (editor != null && !editor.IsDisposed) editor.Script(js);
+        }
+
+        async void PollSystem()
+        {
+            if (sysBusy) return;
+            bool wallUp = form != null && !form.IsDisposed && form.Ready && !userPaused && !covered;
+            bool editorUp = editor != null && !editor.IsDisposed && editor.WindowState != FormWindowState.Minimized;
+            if (!wallUp && !editorUp) return;
+            sysBusy = true;
+            sysTick++;
+            Screen scr = TargetScreen();
+            bool withNet = sysTick % 4 == 1;
+            try
+            {
+                string si = SystemInfo.SystemData(scr);   // touches COM and the registry: stays on this thread
+                string data = await Task.Run(delegate
+                {
+                    StringBuilder sb = new StringBuilder("{rm:");
+                    sb.Append(SystemInfo.Resources()).Append(",ts:").Append(SystemInfo.Traffic());
+                    if (withNet) sb.Append(",nc:").Append(SystemInfo.Network());
+                    return sb.ToString();
+                });
+                ScriptBoth("window.KData&&KData(" + data + ",si:" + si + "});");
+                if (withNet) SendBattery();
+            }
+            catch (Exception ex) { Log("system data: " + ex.Message); }
+            finally { sysBusy = false; }
+        }
+
+        // wg(): download a web address for the page (pages cannot read most sites themselves)
+        async void WebGet(string body, bool toEditor)
+        {
+            int bar = body.IndexOf('|');
+            if (bar < 1) return;
+            string id = body.Substring(0, bar), url = body.Substring(bar + 1);
+            string js;
+            try
+            {
+                if (!url.StartsWith("http://", StringComparison.OrdinalIgnoreCase) && !url.StartsWith("https://", StringComparison.OrdinalIgnoreCase)) throw new Exception("not a web address");
+                using (System.Net.WebClient wc = new System.Net.WebClient())
+                {
+                    wc.Encoding = Encoding.UTF8;
+                    wc.Headers[System.Net.HttpRequestHeader.UserAgent] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) KLWPWallpaper";
+                    string text = await wc.DownloadStringTaskAsync(new Uri(url));
+                    if (text.Length > 3000000) text = text.Substring(0, 3000000);
+                    js = "KHost.wg(" + JsonString(id) + ",true," + JsonString(text) + ");";
+                }
+            }
+            catch (Exception ex)
+            {
+                Log("wg " + url + ": " + ex.Message);
+                js = "KHost.wg(" + JsonString(id) + ",false,'');";
+            }
+            ScriptTo(toEditor, js);
+        }
+
+        // the editor's font downloads: "id|t|url" for text or "id|b|url" for bytes (sent back as base64). A plain
+        // user agent makes Google Fonts hand out .ttf files, which is what KLWP uses.
+        async void WebGetEx(string body, bool toEditor)
+        {
+            string[] parts = body.Split(new char[] { '|' }, 3);
+            if (parts.Length < 3) return;
+            string id = parts[0], url = parts[2];
+            bool bytes = parts[1] == "b";
+            string js;
+            try
+            {
+                if (!url.StartsWith("https://", StringComparison.OrdinalIgnoreCase)) throw new Exception("not a web address");
+                using (System.Net.WebClient wc = new System.Net.WebClient())
+                {
+                    wc.Headers[System.Net.HttpRequestHeader.UserAgent] = "KLWPWallpaper/1.0";
+                    string res;
+                    if (bytes)
+                    {
+                        byte[] b = await wc.DownloadDataTaskAsync(new Uri(url));
+                        if (b.Length > 30000000) throw new Exception("too big");
+                        res = Convert.ToBase64String(b);
+                    }
+                    else
+                    {
+                        wc.Encoding = Encoding.UTF8;
+                        res = await wc.DownloadStringTaskAsync(new Uri(url));
+                    }
+                    js = "KHost.wg(" + JsonString(id) + ",true," + JsonString(res) + ");";
+                }
+            }
+            catch (Exception ex)
+            {
+                Log("wgx " + url + ": " + ex.Message);
+                js = "KHost.wg(" + JsonString(id) + ",false,'');";
+            }
+            ScriptTo(toEditor, js);
+        }
+
+        // the address the page can fetch a preset file from (a file outside the Kustom folder is copied in first)
+        string PresetUrl(string src, string copyName)
+        {
+            string root = KustomDir.TrimEnd('\\') + "\\";
+            if (src.StartsWith(root, StringComparison.OrdinalIgnoreCase))
+            {
+                string[] parts = src.Substring(root.Length).Split('\\');
+                for (int i = 0; i < parts.Length; i++) parts[i] = Uri.EscapeDataString(parts[i]);
+                return "/" + string.Join("/", parts);
+            }
+            File.Copy(src, Path.Combine(AppDir, copyName), true);
+            return "/.app/" + copyName;
+        }
+
+        // the monitors plugged in, for the editor's preview sizes: "2560x1440p,1920x1080"
+        public string MonitorList()
+        {
+            List<string> l = new List<string>();
+            foreach (Screen sc in Screen.AllScreens) l.Add(sc.Bounds.Width + "x" + sc.Bounds.Height + (sc.Primary ? "p" : ""));
+            return string.Join(",", l.ToArray());
+        }
+
+        // the editor's address: the monitors, and the wallpaper that is on the desktop now so it opens straight away
+        public string EditorQuery()
+        {
+            string q = "mon=" + Uri.EscapeDataString(MonitorList());
+            try
+            {
+                string src = Get("preset", "");
+                if (src != "" && File.Exists(src))
+                    q += "&current=" + Uri.EscapeDataString(PresetUrl(src, "editing.klwp") + "?v=" + DateTime.UtcNow.Ticks) + "&name=" + Uri.EscapeDataString(Path.GetFileName(src));
+            }
+            catch (Exception ex) { Log("editor current: " + ex.Message); }
+            return q;
         }
 
         void LoadPreset()
@@ -363,18 +810,7 @@ namespace KlwpWallpaper
             string url;
             try
             {
-                string root = KustomDir.TrimEnd('\\') + "\\";
-                if (src.StartsWith(root, StringComparison.OrdinalIgnoreCase))
-                {
-                    string[] parts = src.Substring(root.Length).Split('\\');
-                    for (int i = 0; i < parts.Length; i++) parts[i] = Uri.EscapeDataString(parts[i]);
-                    url = "/" + string.Join("/", parts);
-                }
-                else
-                {
-                    File.Copy(src, Path.Combine(AppDir, "preset.klwp"), true);
-                    url = "/.app/preset.klwp";
-                }
+                url = PresetUrl(src, "preset.klwp");
                 presetStamp = File.GetLastWriteTimeUtc(src);
             }
             catch (Exception ex) { Log("copy preset: " + ex.Message); return; }
@@ -392,19 +828,38 @@ namespace KlwpWallpaper
                 int level = noBattery ? 100 : (int)Math.Round(ps.BatteryLifePercent * 100);
                 int plugged = (noBattery || ps.PowerLineStatus == PowerLineStatus.Online) ? 1 : 0;
                 int charging = (!noBattery && (ps.BatteryChargeStatus & BatteryChargeStatus.Charging) != 0) ? 1 : 0;
-                form.Script("KWall.data({bi:{level:" + level + ",charging:" + charging + ",plugged:" + plugged + ",source:'" + (plugged == 1 ? "AC" : "Battery") + "'}});");
+                ScriptBoth("window.KData&&KData({bi:{level:" + level + ",charging:" + charging + ",plugged:" + plugged + ",source:'" + (plugged == 1 ? "AC" : "Battery") + "'}});");
             }
             catch (Exception) { }
         }
 
         // ---------------------------------------------------------------- housekeeping, once a second
+        // Windows silently removes a mouse hook that was too slow to answer (for example while the PC was very busy),
+        // and gives no notice. Putting it back now and then means touches can never stay lost.
+        int lastRearm;
+        void RearmHook()
+        {
+            if (hook == IntPtr.Zero || form == null || form.IsDisposed) return;
+            try
+            {
+                Native.UnhookWindowsHookEx(hook);
+                hook = Native.SetWindowsHookEx(14, hookProc, Native.GetModuleHandle(null), 0);   // WH_MOUSE_LL
+                dragging = false;
+            }
+            catch (Exception ex) { Log("rearm: " + ex.Message); }
+            lastRearm = Environment.TickCount;
+        }
+
         void Tick()
         {
+            if (!launchAsking && unchecked(Environment.TickCount - lastRearm) > 30000) RearmHook();
             tickCount++;
             try
             {
                 if (openEvt != null && openEvt.WaitOne(0)) OpenEditor();
                 // Explorer restarting takes the desktop layer (and our window) with it: start again
+                if (editor != null && !editor.IsDisposed) MemoryLow(editor.Web, editor.WindowState == FormWindowState.Minimized);
+                if (!Applied) return;
                 if (form == null || form.IsDisposed || !Native.IsWindow(form.Handle) || !Native.IsWindow(form.DesktopLayer))
                 {
                     Log("window lost, recreating");
@@ -416,7 +871,12 @@ namespace KlwpWallpaper
                 bool cov = IsCovered();
                 if (cov != covered) { covered = cov; }
                 bool want = userPaused || covered;
-                if (want != pausedSent && form.Ready) { pausedSent = want; form.Script("KWall.pause(" + (want ? "true" : "false") + ");"); }
+                if (want != pausedSent && form.Ready)
+                {
+                    pausedSent = want;
+                    form.Script("KWall.pause(" + (want ? "true" : "false") + ");");
+                    MemoryLow(form.Web, want);
+                }
                 // pick up a re-exported preset
                 string src = Get("preset", "");
                 if (form.Ready && src != "" && File.Exists(src) && File.GetLastWriteTimeUtc(src) != presetStamp && tickCount % 2 == 0) LoadPreset();
@@ -442,13 +902,20 @@ namespace KlwpWallpaper
         }
 
         // ---------------------------------------------------------------- mouse: the desktop gets the clicks, so pass them on
-        bool OnDesktop(Native.POINT pt)
+        // true over the wallpaper or empty desktop; icon = the desktop list view has an icon under the point
+        bool OnDesktop(Native.POINT pt, out bool icon)
         {
+            icon = false;
             IntPtr h = Native.WindowFromPoint(pt);
             if (h == IntPtr.Zero) return false;
             if (h == form.Handle || Native.IsChild(form.Handle, h)) return true;
             string c = Native.ClassOf(h);
-            if (c == "SysListView32") return Native.ClassOf(Native.GetParent(h)) == "SHELLDLL_DefView";
+            if (c == "SysListView32")
+            {
+                if (Native.ClassOf(Native.GetParent(h)) != "SHELLDLL_DefView") return false;
+                icon = Native.DesktopIconAt(h, pt) >= 0;
+                return true;
+            }
             return c == "WorkerW" || c == "Progman" || c == "SHELLDLL_DefView";
         }
 
@@ -456,19 +923,27 @@ namespace KlwpWallpaper
         {
             try
             {
-                if (nCode >= 0 && form != null && form.Ready && !form.IsDisposed && !userPaused)
+                if (nCode >= 0 && form != null && form.Ready && !form.IsDisposed && !userPaused && !launchAsking)
                 {
                     int msg = wParam.ToInt32();
-                    if (msg == 0x0201 || msg == 0x0202 || msg == 0x020A || (msg == 0x0200 && dragging))
+                    if (msg == 0x0201 || msg == 0x0202 || msg == 0x0203 || msg == 0x020A || (msg == 0x0200 && dragging))
                     {
                         Native.MSLLHOOKSTRUCT d = (Native.MSLLHOOKSTRUCT)Marshal.PtrToStructure(lParam, typeof(Native.MSLLHOOKSTRUCT));
                         Native.RECT r;
                         Native.GetWindowRect(form.Handle, out r);
                         int x = d.pt.X - r.Left, y = d.pt.Y - r.Top;
                         bool inside = d.pt.X >= r.Left && d.pt.X < r.Right && d.pt.Y >= r.Top && d.pt.Y < r.Bottom;
-                        if (msg == 0x0201)
+                        bool icon;
+                        if (msg == 0x0201 || msg == 0x0203)
                         {
-                            if (inside && OnDesktop(d.pt)) { dragging = true; form.Script("KWall.ptr('down'," + x + "," + y + ");"); }
+                            // a press on an icon belongs to the icon, not to the wallpaper
+                            if (inside && OnDesktop(d.pt, out icon) && !icon)
+                            {
+                                dragging = true;
+                                form.Script("KWall.ptr('down'," + x + "," + y + ");");
+                                // without the press the desktop never starts its blue selection box
+                                if (noSelectRect) { swallowUp = true; return new IntPtr(1); }
+                            }
                         }
                         else if (msg == 0x0200)
                         {
@@ -478,13 +953,15 @@ namespace KlwpWallpaper
                         else if (msg == 0x0202)
                         {
                             if (dragging) { dragging = false; form.Script("KWall.ptr('move'," + x + "," + y + ");KWall.ptr('up'," + x + "," + y + ");"); }
+                            if (swallowUp) { swallowUp = false; return new IntPtr(1); }
                         }
                         else if (msg == 0x020A)
                         {
-                            if (inside && OnDesktop(d.pt))
+                            if (inside && OnDesktop(d.pt, out icon))
                             {
                                 int delta = (short)((d.mouseData >> 16) & 0xFFFF);
-                                form.Script("KWall.wheel(" + (-delta) + ");");
+                                bool shift = (Native.GetAsyncKeyState(0x10) & 0x8000) != 0;   // Shift+wheel: vertical screens
+                                form.Script("KWall.wheel(" + (-delta) + "," + (shift ? "true" : "false") + ");");
                             }
                         }
                     }
@@ -508,6 +985,10 @@ namespace KlwpWallpaper
             ContextMenuStrip m = tray.ContextMenuStrip;
             m.Items.Clear();
             string cur = Get("preset", "");
+            m.Items.Add(Item("Open the editor", delegate { OpenEditor(); }, false));
+            m.Items.Add(new ToolStripSeparator());
+            bool applied = Applied;
+            m.Items.Add(Item("Apply to desktop", delegate { ApplyDesktop(!applied); }, applied));
             ToolStripMenuItem head = new ToolStripMenuItem(cur == "" ? "No wallpaper chosen" : Path.GetFileName(cur));
             head.Enabled = false;
             m.Items.Add(head);
@@ -522,7 +1003,7 @@ namespace KlwpWallpaper
                 {
                     if (shown++ >= 30) break;
                     string full = fi.FullName;
-                    walls.DropDownItems.Add(Item(Path.GetFileNameWithoutExtension(fi.Name), delegate { Set("preset", full); presetStamp = DateTime.MinValue; LoadPreset(); }, string.Equals(full, cur, StringComparison.OrdinalIgnoreCase)));
+                    walls.DropDownItems.Add(Item(Path.GetFileNameWithoutExtension(fi.Name), delegate { Set("preset", full); presetStamp = DateTime.MinValue; ShowOnDesktop(); }, string.Equals(full, cur, StringComparison.OrdinalIgnoreCase)));
                 }
                 if (files.Count == 0) { ToolStripMenuItem none = new ToolStripMenuItem("(nothing in the Kustom folder yet)"); none.Enabled = false; walls.DropDownItems.Add(none); }
             }
@@ -563,10 +1044,15 @@ namespace KlwpWallpaper
             }
 
             m.Items.Add(new ToolStripSeparator());
+            bool sim = Get("usesim", "0") == "1";
+            m.Items.Add(Item("Use the editor's simulated data", delegate
+            {
+                Set("usesim", sim ? "0" : "1");
+                if (form != null && !form.IsDisposed) form.Script("KWall.useSim(" + (sim ? "false" : "true") + ");");
+            }, sim));
             m.Items.Add(Item("Pause", delegate { userPaused = !userPaused; Set("paused", userPaused ? "1" : "0"); }, userPaused));
-            m.Items.Add(Item("Reload", delegate { CreateForm(); }, false));
+            if (Applied) m.Items.Add(Item("Reload", delegate { CreateForm(); }, false));
             m.Items.Add(new ToolStripSeparator());
-            m.Items.Add(Item("Open the editor", delegate { OpenEditor(); }, false));
             ToolStripMenuItem kf = new ToolStripMenuItem("Kustom folder");
             ToolStripMenuItem kpath = new ToolStripMenuItem(KustomDir); kpath.Enabled = false;
             kf.DropDownItems.Add(kpath);
@@ -590,7 +1076,7 @@ namespace KlwpWallpaper
                 {
                     Set("preset", d.FileName);
                     presetStamp = DateTime.MinValue;
-                    LoadPreset();
+                    ShowOnDesktop();
                 }
             }
         }
@@ -625,7 +1111,7 @@ namespace KlwpWallpaper
                 {
                     if (k == null) return;
                     if (k.GetValue("KLWPWallpaper") != null) k.DeleteValue("KLWPWallpaper", false);
-                    else k.SetValue("KLWPWallpaper", "\"" + Application.ExecutablePath + "\"");
+                    else k.SetValue("KLWPWallpaper", "\"" + Application.ExecutablePath + "\" --background");
                 }
             }
             catch (Exception ex) { Log("startup: " + ex.Message); }

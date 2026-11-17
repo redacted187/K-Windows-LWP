@@ -22,10 +22,11 @@ namespace KlwpWallpaper
         [STAThread]
         static void Main(string[] args)
         {
-            bool wantEditor = false, uninstall = false;
+            // editor first: starting the app opens the editor; Windows' startup entry passes --background
+            bool wantEditor = true, uninstall = false;
             foreach (string a in args)
             {
-                if (a == "--editor") wantEditor = true;
+                if (a == "--background") wantEditor = false;
                 if (a == "--uninstall") uninstall = true;
             }
             Application.EnableVisualStyles();

@@ -209,7 +209,7 @@ namespace KlwpWallpaperSetup
 
                 string exe = Path.Combine(dir, "KLWPWallpaper.exe");
                 string programs = Environment.GetFolderPath(Environment.SpecialFolder.Programs);
-                Shortcut(Path.Combine(programs, "KLWP Wallpaper.lnk"), exe, "", "Live KLWP wallpaper for the desktop");
+                Shortcut(Path.Combine(programs, "KLWP Wallpaper.lnk"), exe, "--background", "Live KLWP wallpaper for the desktop (tray only)");
                 Shortcut(Path.Combine(programs, "KLWP Editor.lnk"), exe, "--editor", "Make and edit KLWP wallpapers");
                 string deskLnk = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory), "KLWP Editor.lnk");
                 if (deskBox.Checked) Shortcut(deskLnk, exe, "--editor", "Make and edit KLWP wallpapers");
@@ -227,7 +227,7 @@ namespace KlwpWallpaperSetup
                 }
                 using (RegistryKey k = Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run"))
                 {
-                    if (startBox.Checked) k.SetValue("KLWPWallpaper", "\"" + exe + "\"");
+                    if (startBox.Checked) k.SetValue("KLWPWallpaper", "\"" + exe + "\" --background");
                     else k.DeleteValue("KLWPWallpaper", false);
                 }
 

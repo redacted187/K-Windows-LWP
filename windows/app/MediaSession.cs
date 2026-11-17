@@ -4,9 +4,12 @@
 using System;
 using System.IO;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 #if WINRT
+using Windows.Foundation;
 using Windows.Media.Control;
+using Windows.Storage.Streams;
 #endif
 
 namespace KlwpWallpaper
@@ -17,10 +20,27 @@ namespace KlwpWallpaper
         public const bool Available = true;
         static GlobalSystemMediaTransportControlsSessionManager mgr;
         static string coverKey = "", coverUrl = "";
+        // the cover picture (a data: address, "" when there is none), sent to the pages on its own and only when it
+        // changes: it is far bigger than the rest of the song info, which changes every second while playing
+        public static string Cover { get { return coverUrl; } }
+
+        // Waits for a Windows async result by polling its status, so no WinRT/.NET bridge assembly is needed
+        // (Windows' split metadata files do not line up with that bridge's AsTask() when compiled with csc).
+        static T Wait<T>(IAsyncOperation<T> op, int ms)
+        {
+            int start = Environment.TickCount;
+            while (op.Status == AsyncStatus.Started)
+            {
+                if (Environment.TickCount - start > ms) { op.Cancel(); throw new TimeoutException(); }
+                Thread.Sleep(5);
+            }
+            if (op.Status != AsyncStatus.Completed) throw new InvalidOperationException("media call " + op.Status);
+            return op.GetResults();
+        }
 
         static GlobalSystemMediaTransportControlsSession Current()
         {
-            if (mgr == null) mgr = GlobalSystemMediaTransportControlsSessionManager.RequestAsync().AsTask().Result;
+            if (mgr == null) mgr = Wait(GlobalSystemMediaTransportControlsSessionManager.RequestAsync(), 3000);
             return mgr == null ? null : mgr.GetCurrentSession();
         }
 
@@ -31,12 +51,12 @@ namespace KlwpWallpaper
             {
                 GlobalSystemMediaTransportControlsSession s = Current();
                 if (s == null) return false;
-                Task<bool> t;
-                if (action.IndexOf("NEXT", StringComparison.Ordinal) >= 0) t = s.TrySkipNextAsync().AsTask();
-                else if (action.IndexOf("PREV", StringComparison.Ordinal) >= 0) t = s.TrySkipPreviousAsync().AsTask();
-                else if (action.IndexOf("PLAY", StringComparison.Ordinal) >= 0 || action.IndexOf("PAUSE", StringComparison.Ordinal) >= 0) t = s.TryTogglePlayPauseAsync().AsTask();
+                IAsyncOperation<bool> op;
+                if (action.IndexOf("NEXT", StringComparison.Ordinal) >= 0) op = s.TrySkipNextAsync();
+                else if (action.IndexOf("PREV", StringComparison.Ordinal) >= 0) op = s.TrySkipPreviousAsync();
+                else if (action.IndexOf("PLAY", StringComparison.Ordinal) >= 0 || action.IndexOf("PAUSE", StringComparison.Ordinal) >= 0) op = s.TryTogglePlayPauseAsync();
                 else return false;
-                return t.Wait(2000) && t.Result;
+                return Wait(op, 2000);
             }
             catch (Exception) { return false; }
         }
@@ -48,7 +68,7 @@ namespace KlwpWallpaper
             {
                 GlobalSystemMediaTransportControlsSession s = Current();
                 if (s == null) return null;
-                GlobalSystemMediaTransportControlsSessionMediaProperties p = s.TryGetMediaPropertiesAsync().AsTask().Result;
+                GlobalSystemMediaTransportControlsSessionMediaProperties p = Wait(s.TryGetMediaPropertiesAsync(), 2000);
                 GlobalSystemMediaTransportControlsSessionPlaybackInfo pb = s.GetPlaybackInfo();
                 GlobalSystemMediaTransportControlsSessionTimelineProperties tl = s.GetTimelineProperties();
                 string state = "STOPPED";
@@ -76,15 +96,19 @@ namespace KlwpWallpaper
                     coverUrl = "";
                     try
                     {
+                        // the same picture Windows shows in its media flyout (album art, or a video's thumbnail)
                         if (p.Thumbnail != null)
                         {
-                            var st = p.Thumbnail.OpenReadAsync().AsTask().Result;
-                            using (Stream src = st.AsStreamForRead())
-                            using (MemoryStream ms = new MemoryStream())
+                            IRandomAccessStreamWithContentType st = Wait(p.Thumbnail.OpenReadAsync(), 3000);
+                            ulong size = st.Size;
+                            if (size > 0 && size < 4000000)
                             {
-                                src.CopyTo(ms);
+                                DataReader rd = new DataReader(st.GetInputStreamAt(0));
+                                uint got = Wait(rd.LoadAsync((uint)size), 3000);
+                                byte[] buf = new byte[got];
+                                rd.ReadBytes(buf);
                                 string type = string.IsNullOrEmpty(st.ContentType) ? "image/png" : st.ContentType;
-                                if (ms.Length > 0 && ms.Length < 4000000) coverUrl = "data:" + type + ";base64," + Convert.ToBase64String(ms.ToArray());
+                                coverUrl = "data:" + type + ";base64," + Convert.ToBase64String(buf);
                             }
                         }
                     }
@@ -100,7 +124,6 @@ namespace KlwpWallpaper
                 sb.Append(",\"pos\":").Append(((long)Math.Round(pos)).ToString());
                 sb.Append(",\"package\":").Append(App.Json(app));
                 sb.Append(",\"app\":").Append(App.Json(shortApp));
-                sb.Append(",\"coverImg\":").Append(App.Json(coverUrl));
                 sb.Append('}');
                 return sb.ToString();
             }
@@ -113,6 +136,7 @@ namespace KlwpWallpaper
         public const bool Available = false;
         public static bool Command(string action) { return false; }
         public static string InfoJson() { return null; }
+        public static string Cover { get { return ""; } }
     }
 #endif
 }
