@@ -10,9 +10,6 @@
     const env = { state, view, rt, scopes: [], depth: 0, errors: 0 };
     env.fctx = {
       sim: state.sim,
-      live: !!state.live,
-      palette: state.assets.palette,
-      webGet: state.live ? state.assets.webGet : undefined,
       now: view.now || new Date(),
       h24: !!(state.sim.settings && state.sim.settings.clock24h),
       time: rt.time || 0,
@@ -98,9 +95,6 @@
     return undefined;
   }
   // Resolve a property of a module (or animation/event object) honouring formula / global toggles.
-  const KD = G.KDefaults;
-  // left to each caller: the anchor depends on where the item sits, and a bitmap texture's width is handled locally
-  const NO_KD = new Set(['position_anchor', 'fx_gradient_bitmap_width']);
   function P(env, m, k, d) {
     let v;
     const tg = m.internal_toggles ? m.internal_toggles[k] : 0;
@@ -113,12 +107,7 @@
       v = m[k];
       if (typeof v === 'string' && v.indexOf('$') >= 0 && k !== 'text_expression') v = evalF(env, v);
     }
-    if (v === undefined || v === null || v === '') {
-      // a setting KLWP left out of the file has KLWP's own default value
-      const kd = m.internal_type && KD ? KD.get(m.internal_type, k) : undefined;
-      if (kd === undefined || NO_KD.has(k)) return d;
-      return typeof d === 'number' && typeof kd !== 'number' ? parseFloat(kd) : kd;
-    }
+    if (v === undefined || v === null || v === '') return d;
     if (typeof d === 'number') {
       const n = typeof v === 'number' ? v : parseFloat(v);
       return isFinite(n) ? n : d;
@@ -172,81 +161,48 @@
     NORMAL_2W: twoWay(accDec),
     STRAIGHT_2W: twoWay(t => t)
   };
-  // ---- KLWP's own animation logic (org.kustom.lib.render.AnimationModule and the Animation* option enums) ----
-  // Screens are indexed from 0; "last" is the highest index. The centre screen is ceil(last / 2).
-  function centerScreen(center, screens) {
-    const last = Math.max(0, screens - 1),
-      mid = Math.ceil(last / 2);
+  function centerScreen(center, n) {
+    const mid = Math.floor((n - 1) / 2);
     if (center === 'FIRST') return 0;
-    if (center === 'LAST') return last;
+    if (center === 'LAST') return n - 1;
     let m = /^SCREEN(\d+)$/.exec(center);
     if (m) return parseInt(m[1], 10) - 1;
     m = /^CENTER_([MP])(\d)$/.exec(center);
-    if (m) return m[1] === 'M' ? Math.max(0, mid - parseInt(m[2], 10)) : Math.min(last, mid + parseInt(m[2], 10));
+    if (m) return mid + (m[1] === 'M' ? -1 : 1) * parseInt(m[2], 10);
     return mid;
   }
-  // eased value (0..100) of a timed animation at progress f (0..100) running in direction dir (1 forward, -1 back, 0 idle)
-  function easeApply(name, f, dir) {
-    const normal = x => (x === 0 ? 0 : accDec(x * 0.01) * 100),
-      tri = x => (x <= 50 ? x * 2 : (100 - x) * 2),
-      there = fn => (f === 0 ? 0 : dir === 1 ? fn(f * 0.01) * 100 : 100 - fn(1 - f * 0.01) * 100);
-    switch (name) {
-      case 'INVERTED':
-        return Math.max(0, Math.min(100, 100 - normal(f)));
-      case 'BOUNCE':
-        return there(EASE.BOUNCE);
-      case 'OVERSHOOT':
-        return there(EASE.OVERSHOOT);
-      case 'STRAIGHT':
-      case 'LINEAR':
-        return f;
-      case 'NORMAL_2W':
-        return normal(tri(f));
-      case 'STRAIGHT_2W':
-        return tri(f);
-      // KLWP hands these interpolators the raw 0..100 progress rather than 0..1, so they shoot far past 100
-      case 'ACCELERATE':
-        return f * f;
-      case 'DECELERATE':
-        return 1 - (1 - f) * (1 - f);
-      case 'ANTICIPATE':
-        return EASE.ANTICIPATE(f);
-      case 'ANTICIPATE_OVERSHOOT':
-        return EASE.ANTICIPATE_OVERSHOOT(f);
-      default:
-        return normal(f);
-    }
-  }
-  // A triggered animation (switch, formula, unlock): runs towards target (0 or 100) over delay + duration, and a
-  // change of mind half-way turns it round from where it is. Times in milliseconds.
-  function timedProgress(env, id, target, durMs, delayMs) {
+  // A switch-driven animation runs from where it is to its new end over "duration", eased in time (so an overshoot
+  // lands at the end of the move, whichever way it is going).
+  function switchProgress(env, id, on, durS, delayS, ease) {
     const rt = env.rt,
-      now = (rt.time || 0) * 1000,
-      total = Math.max(1, delayMs + durMs);
+      t = rt.time || 0,
+      target = on ? 1 : 0;
     let st = rt.sw.get(id);
     if (!st) {
-      st = { dir: 0, t0: 0, f: target };
+      st = { on, t0: -1e9, from: target, dur: 0, delay: 0, ease };
       rt.sw.set(id, st);
+      return target;
     }
-    const dir = st.f > target ? -1 : 1;
-    if (st.dir !== dir && st.f !== target) {
-      st.t0 = st.dir === 0 ? now : now - (total - (now - st.t0));
-      st.dir = dir;
+    const at = () => {
+      const k = st.dur <= 0 ? 1 : Math.max(0, Math.min(1, (t - st.t0 - st.delay) / st.dur));
+      return k >= 1 ? (st.on ? 1 : 0) : st.from + ((st.on ? 1 : 0) - st.from) * (st.ease || EASE.NORMAL)(k);
+    };
+    const cur = at();
+    if (st.on !== on) {
+      st.from = Math.max(0, Math.min(1, cur));
+      st.on = on;
+      st.t0 = t;
+      st.dur = durS;
+      st.delay = delayS;
+      st.ease = ease;
+      rt.animating = true;
+      return st.from;
     }
-    if (st.dir !== 0) {
-      let f = Math.max(0, Math.min(100, ((now - (st.t0 + delayMs)) * 100) / Math.max(1, durMs)));
-      if (st.dir === -1) f = 100 - f;
-      st.f = f;
-      const d = st.dir;
-      if (now - st.t0 > total) st.dir = 0;
-      else rt.animating = true;
-      return { f, dir: d };
-    }
-    return { f: st.f, dir: 0 };
+    if (t - st.t0 - st.delay < st.dur) rt.animating = true;
+    return cur;
   }
   function animTransform(env, m, node) {
-    // ops are rotate / scale / skew steps, each about its own pivot, applied in list order after the translation
-    const tr = { dx: 0, dy: 0, alpha: 1, ops: [] };
+    const tr = { dx: 0, dy: 0, alpha: 1, sx: 1, sy: 1, rot: 0, px: 0.5, py: 0.5 };
     const list = m.internal_animations;
     if (!list || !list.length) return tr;
     const v = env.view;
@@ -254,156 +210,126 @@
       const type = P(env, a, 'type', 'SCROLL');
       if (type === 'DISABLED') return;
       const action = P(env, a, 'action', 'SCROLL'),
-        speed = P(env, a, 'speed', 100),
-        amount = P(env, a, 'amount', 100),
-        angle = P(env, a, 'angle', 0) * D2R,
-        limit = P(env, a, 'limit', 0),
+        speed = P(env, a, 'speed', 100) / 100,
+        amount = P(env, a, 'amount', 100) / 100;
+      const angle = P(env, a, 'angle', 0),
         easeN = P(env, a, 'ease', 'NORMAL'),
-        durMs = P(env, a, 'duration', 10) * 100,
-        delayMs = P(env, a, 'delay', 0) * 100;
-      const anchor = P(env, a, 'anchor', 'MODULE_CENTER');
-      // where rotate / scale / skew pivot: a point of the item, or a point of the screen
-      const pivot = () => {
-        const scr = /^SCREEN_/.test(anchor),
-          fx = /LEFT/.test(anchor) ? 0 : /RIGHT/.test(anchor) ? 1 : 0.5,
-          fy = /TOP/.test(anchor) ? 0 : /BOTTOM/.test(anchor) ? 1 : 0.5;
-        return scr ? { sx: v.kw * fx, sy: v.kh * fy } : { fx, fy };
-      };
-      const push = o => tr.ops.push(Object.assign(o, pivot()));
-      const scale = val => {
-        // val runs from 100 (untouched) down to 100 - amount
-        if (action === 'SCALE') push({ t: 'scale', x: val / 100, y: val / 100 });
-        else if (action === 'SCALE_X') push({ t: 'scale', x: val / 100, y: 1 });
-        else if (action === 'SCALE_Y') push({ t: 'scale', x: 1, y: val / 100 });
-        else if (action === 'SCALE_INVERTED') push({ t: 'scale', x: 15 - (val * 14) / 100, y: 15 - (val * 14) / 100 });
-      };
-      const clampLimit = d => (limit > 0 ? Math.max(-limit, Math.min(limit, d)) : d);
-      const isScale = /^SCALE/.test(action),
-        isSkew = /^SKEW_/.test(action),
-        isRot = action === 'ROTATE' || action === 'ROTATE_INVERTED',
-        isFade = action === 'FADE' || action === 'FADE_INVERTED',
-        isScroll = action === 'SCROLL' || action === 'SCROLL_INVERTED';
-
-      if (type === 'SCROLL' || type === 'SCROLL_Y') {
-        const vertical = type === 'SCROLL_Y',
-          last = vertical ? 0 : Math.max(0, v.screens - 1), // the editor has no vertical pages
-          step = last > 0 ? 1 / last : 0,
-          off = last > 0 ? Math.max(0, Math.min(1, v.scroll / last)) : 0.5,
-          rule = P(env, a, 'rule', 'CENTER'),
-          c = centerScreen(P(env, a, 'center', 'CENTER'), v.screens);
-        const upTo = rule === 'UP_TO_CENTER' || rule === 'BEFORE_CENTER',
-          from = rule === 'FROM_CENTER' || rule === 'AFTER_CENTER';
-        const raw = screen => off - screen * step;
-        const shifted = c + (rule === 'BEFORE_CENTER' ? -1 : rule === 'AFTER_CENTER' ? 1 : 0);
-        // 100 on the animation's own screen, falling to 0 one screen away at 100% speed; one-sided rules stay at 100
-        // on their quiet side
-        const amountAt = unsigned => {
-          const d = raw(shifted);
-          if (upTo && d <= 0) return 100;
-          if (from && d >= 0) return 100;
-          const w = step * (100 / speed);
-          if (!(w > 0)) return 0;
-          const res = 100 - Math.min(100, (100 / w) * Math.min(w, Math.abs(d)));
-          return !unsigned && d < 0 ? -res : res;
-        };
-        if (isScroll) {
-          const d0 = raw(c),
-            active = rule === 'CENTER' || (upTo && d0 <= 0) || (from && d0 >= 0);
-          if (!active || last === 0) return;
-          const W = vertical ? v.kh : v.kw;
-          let t = action === 'SCROLL' ? -off * W : (off - 1) * W;
-          if (action === 'SCROLL') t += (W / last) * c;
-          else if (c <= last) t += (W / last) * (last - c);
-          t = clampLimit((t * speed) / 100);
-          if (vertical) {
-            tr.dx += angle ? Math.sin(angle) * t : 0;
-            tr.dy += angle ? Math.cos(angle) * t : t;
-          } else {
-            tr.dx += angle ? Math.cos(angle) * t : t;
-            tr.dy += angle ? Math.sin(angle) * t : 0;
-          }
-        } else if (isScale) scale(Math.max(100 - amount, amountAt(true)));
-        else if (isSkew) {
-          let k = (100 - Math.max(100 - amount, Math.abs(amountAt(false)))) * 0.02;
-          if (raw(shifted) < 0) k = -k;
-          push({ t: 'skew', x: action === 'SKEW_X' ? k : 0, y: action === 'SKEW_Y' ? k : 0 });
-        } else if (isRot) {
-          let r = amountAt(false);
-          r = r >= 0 ? Math.max(100 - amount, r) : Math.min(amount - 100, r);
-          push({ t: 'rot', deg: (action === 'ROTATE_INVERTED' ? -1 : 1) * r * 3.6 });
-        } else if (isFade) {
-          let val = Math.max(100 - amount, amountAt(true));
-          if (action === 'FADE_INVERTED') val = 100 - val;
-          tr.alpha *= val / 100;
-        } else if (action === 'ADVANCED') advanced(a, 100 - Math.abs(amountAt(false)));
-        return;
-      }
-
-      // everything else is driven by an eased 0..100 value
-      let p;
-      if (type === 'LOOP_FW' || type === 'LOOP_2W') {
-        const total = Math.max(1, delayMs + durMs),
-          now = (env.rt.time || 0) * 1000,
-          leg = Math.floor(now / total);
-        let f = Math.max(0, Math.min(100, ((now - leg * total - delayMs) * 100) / Math.max(1, durMs)));
-        const dir = type === 'LOOP_2W' && leg % 2 === 1 ? -1 : 1;
-        if (dir === -1) f = 100 - f;
-        p = easeApply(easeN, f, dir);
+        ease = EASE[easeN] || EASE.NORMAL;
+      const dur = P(env, a, 'duration', 10) / 10,
+        delay = P(env, a, 'delay', 0) / 10;
+      let p = 0,
+        signed = 0,
+        scrollLike = false;
+      if (type === 'SCROLL') {
+        const rule = P(env, a, 'rule', 'CENTER');
+        let raw = v.scroll - centerScreen(P(env, a, 'center', 'CENTER'), v.screens);
+        // the "In" actions (Scale In, Fade In, Color Filter In) run on the other side of the centre screen
+        if (rule !== 'CENTER' && /^(SCALE|SCALE_X|SCALE_Y|FADE|COLOR)_INVERTED$/.test(action)) raw = -raw;
+        if (rule === 'BEFORE_CENTER' || rule === 'UP_TO_CENTER') raw = Math.min(raw, 0);
+        if (rule === 'AFTER_CENTER' || rule === 'FROM_CENTER') raw = Math.max(raw, 0);
+        signed = raw;
+        p = Math.min(1, Math.abs(raw) * speed);
+        scrollLike = true;
+        // "Before/After Center" play towards the centre screen and are complete on it; the other rules start from it
+        if (rule === 'BEFORE_CENTER' || rule === 'AFTER_CENTER') p = 1 - p;
+      } else if (type === 'LOOP_FW' || type === 'LOOP_2W' || type === 'LOOP') {
+        const t = ((env.rt.time || 0) - delay) / Math.max(0.05, dur);
+        let k = t - Math.floor(t);
+        // two-way loops play the eased move out, then the same eased move back (a bounce settles at each end)
+        p = type === 'LOOP_2W' ? (k < 0.5 ? ease(k * 2) : 1 - ease(k * 2 - 1)) : ease(k);
+        signed = p;
         if (v.play) env.rt.animating = true;
-      } else if (type === 'SWITCH' || type === 'FORMULA' || type === 'UNLOCK' || type === 'VISIBILITY') {
-        let on;
-        if (type === 'SWITCH') {
-          const g = gv(env, P(env, a, 'trigger', ''));
-          on = F.num(g || 0) !== 0 || String(g) === 'true';
-        } else if (type === 'FORMULA') on = F.num(evalF(env, a.formula || '')) !== 0;
-        else if (type === 'UNLOCK') on = !!v.locked;
-        else on = false;
-        const st = timedProgress(env, node.id + ':' + idx, on ? 100 : 0, durMs, delayMs);
-        p = easeApply(easeN, st.f, st.dir);
+      } else if (type === 'SWITCH') {
+        const on =
+          F.num(gv(env, P(env, a, 'trigger', '')) || 0) !== 0 || String(gv(env, P(env, a, 'trigger', ''))) === 'true';
+        p = switchProgress(env, node.id + ':' + idx, on, dur, on ? delay : 0, ease);
+        signed = p;
+      } else if (type === 'FORMULA') {
+        const on = F.num(evalF(env, a.formula || '')) !== 0;
+        p = switchProgress(env, node.id + ':' + idx, on, dur, on ? delay : 0, ease);
+        signed = p;
+      } else if (type === 'UNLOCK') {
+        p = switchProgress(env, node.id + ':' + idx, !!v.locked, dur, 0, ease);
+        signed = p;
       } else if (type === 'VISUALIZER') {
-        p = v.play ? 50 + 50 * Math.sin((env.rt.time || 0) * 9 + idx * 1.7 + (node.id % 7)) : 50;
+        p = v.play ? 0.5 + 0.5 * Math.sin((env.rt.time || 0) * 9 + idx * 1.7 + (node.id % 7)) : 0.5;
+        signed = p;
         if (v.play) env.rt.animating = true;
-      } else return; // gyro is not simulated
-
-      const part = (p / 100) * amount;
-      if (isScroll) {
-        let d = clampLimit((((Math.min(v.kw, v.kh) / 100) * speed) / 100) * p);
-        if (action === 'SCROLL_INVERTED') d = -d;
-        tr.dx += angle ? Math.cos(angle) * d : d;
-        tr.dy += angle ? Math.sin(angle) * d : 0;
-      } else if (isScale) scale(100 - part);
-      else if (isSkew) {
-        const k = (100 - part) * 0.02;
-        push({ t: 'skew', x: action === 'SKEW_X' ? k : 0, y: action === 'SKEW_Y' ? k : 0 });
-      } else if (isRot) push({ t: 'rot', deg: (action === 'ROTATE_INVERTED' ? -1 : 1) * part * 3.6 });
-      else if (isFade) tr.alpha *= (action === 'FADE' ? 100 - part : part) / 100;
-      else if (action === 'ADVANCED') advanced(a, part);
-
-      function advanced(anim, pos) {
-        const by = {};
-        (anim.animator || []).forEach(kf => {
-          (by[kf.property] = by[kf.property] || []).push(kf);
-        });
-        Object.keys(by).forEach(prop => {
-          const ks = by[prop].slice().sort((x, y) => x.position - y.position);
-          let val;
-          if (pos <= ks[0].position) val = ks[0].value;
-          else if (pos >= ks[ks.length - 1].position) val = ks[ks.length - 1].value;
-          else
-            for (let i = 0; i < ks.length - 1; i++)
-              if (pos >= ks[i].position && pos <= ks[i + 1].position) {
-                const k = (pos - ks[i].position) / Math.max(1e-6, ks[i + 1].position - ks[i].position);
-                val = ks[i].value + (ks[i + 1].value - ks[i].value) * (EASE[ks[i + 1].ease] || EASE.STRAIGHT)(k);
-                break;
-              }
-          if (prop === 'X_OFFSET') tr.dx += val;
-          else if (prop === 'Y_OFFSET') tr.dy += val;
-          else if (prop === 'OPACITY') tr.alpha *= Math.max(0, Math.min(1, 1 - val / 100));
-          else if (prop === 'SCALE_XY') tr.ops.push({ t: 'scale', x: val, y: val, fx: 0.5, fy: 0.5 });
-          else if (prop === 'SCALE_X') tr.ops.push({ t: 'scale', x: val, y: 1, fx: 0.5, fy: 0.5 });
-          else if (prop === 'SCALE_Y') tr.ops.push({ t: 'scale', x: 1, y: val, fx: 0.5, fy: 0.5 });
-          else if (prop === 'ROTATE') tr.ops.push({ t: 'rot', deg: val, fx: 0.5, fy: 0.5 });
-        });
+      } else if (type === 'GYRO') {
+        p = 0;
+      }
+      const inv = /_INVERTED$/.test(action),
+        base = action.replace(/_INVERTED$/, '');
+      const anchor = P(env, a, 'anchor', 'MODULE_CENTER');
+      if (base !== 'SCROLL' && base !== 'FADE' && base !== 'ADVANCED') {
+        if (/^MODULE_/.test(anchor)) {
+          if (/LEFT/.test(anchor)) tr.px = 0;
+          else if (/RIGHT/.test(anchor)) tr.px = 1;
+          if (/TOP/.test(anchor)) tr.py = 0;
+          else if (/BOTTOM/.test(anchor)) tr.py = 1;
+        }
+      }
+      switch (base) {
+        case 'SCROLL': {
+          // distance is a percentage of the 720-point screen width; page scrolling moves against the scroll
+          // at 100% an item keeps pace with the wallpaper, which is "xscreens" screens wide and spread over all the pages
+          const dist = scrollLike
+            ? -signed * 720 * speed * (v.screens > 1 ? Math.max(1, (v.xscreens || 2) - 1) / (v.screens - 1) : 0)
+            : p * 720 * speed;
+          const s = inv ? -1 : 1;
+          tr.dx += s * dist * Math.cos(angle * D2R);
+          tr.dy += s * dist * Math.sin(angle * D2R);
+          break;
+        }
+        case 'FADE':
+          tr.alpha *= Math.max(0, 1 - (inv ? 1 - p : p) * amount);
+          break;
+        case 'ROTATE':
+          tr.rot += (inv ? -1 : 1) * p * 360 * amount;
+          break;
+        // "Scale Out" shrinks by amount, "Scale In" (inverted) grows by amount
+        case 'SCALE': {
+          const s = inv ? 1 + p * amount * 14 : Math.max(0, 1 - p * amount);
+          tr.sx *= s;
+          tr.sy *= s;
+          break;
+        }
+        case 'SCALE_X':
+          tr.sx *= Math.max(0, 1 - p * amount);
+          break;
+        case 'SCALE_Y':
+          tr.sy *= Math.max(0, 1 - p * amount);
+          break;
+        case 'ADVANCED': {
+          const by = {};
+          (a.animator || []).forEach(kf => {
+            (by[kf.property] = by[kf.property] || []).push(kf);
+          });
+          const pos = p * 100;
+          Object.keys(by).forEach(prop => {
+            const ks = by[prop].slice().sort((x, y) => x.position - y.position);
+            let val;
+            if (pos <= ks[0].position) val = ks[0].value;
+            else if (pos >= ks[ks.length - 1].position) val = ks[ks.length - 1].value;
+            else
+              for (let i = 0; i < ks.length - 1; i++)
+                if (pos >= ks[i].position && pos <= ks[i + 1].position) {
+                  const k = (pos - ks[i].position) / Math.max(1e-6, ks[i + 1].position - ks[i].position);
+                  val = ks[i].value + (ks[i + 1].value - ks[i].value) * (EASE[ks[i + 1].ease] || EASE.STRAIGHT)(k);
+                  break;
+                }
+            if (prop === 'X_OFFSET') tr.dx += val;
+            else if (prop === 'Y_OFFSET') tr.dy += val;
+            else if (prop === 'OPACITY') tr.alpha *= Math.max(0, Math.min(1, 1 - val / 100));
+            else if (prop === 'SCALE_XY') {
+              tr.sx *= val;
+              tr.sy *= val;
+            } else if (prop === 'SCALE_X') tr.sx *= val;
+            else if (prop === 'SCALE_Y') tr.sy *= val;
+            else if (prop === 'ROTATE') tr.rot += val;
+          });
+          break;
+        }
       }
     });
     return tr;
@@ -523,41 +449,11 @@
     paint(ctx, mode === 'CLEAR');
     ctx.restore();
   }
-  // Android blends gradient colours with premultiplied alpha (measured: a fade to a transparent colour is linear),
-  // while a canvas gradient blends them straight; so the colour change is laid down as many small premultiplied steps
-  function premulStops(gr, a, b, col1, col2) {
-    const p = F.parseColor(col1) || { r: 255, g: 255, b: 255, a: 255 },
-      q = F.parseColor(col2) || { r: 0, g: 0, b: 0, a: 255 };
-    gr.addColorStop(0, css(col1));
-    if (b <= a) {
-      gr.addColorStop(a, css(col1));
-      gr.addColorStop(a, css(col2));
-    } else
-      for (let i = 0; i <= 24; i++) {
-        const t = i / 24,
-          al = (p.a + (q.a - p.a) * t) / 255,
-          mix = c => (p[c] * p.a + (q[c] * q.a - p[c] * p.a) * t) / 255 / (al || 1);
-        gr.addColorStop(
-          a + (b - a) * t,
-          'rgba(' +
-            Math.round(mix('r')) +
-            ',' +
-            Math.round(mix('g')) +
-            ',' +
-            Math.round(mix('b')) +
-            ',' +
-            al.toFixed(4) +
-            ')'
-        );
-      }
-    gr.addColorStop(1, css(col2));
-    return gr;
-  }
   function fillStyle(env, ctx, m, w, h, colorKey) {
     const col = P(env, m, colorKey || 'paint_color', '#FFFFFFFF');
     const g = P(env, m, 'fx_gradient', 'NONE');
     if (g === 'NONE') return css(col);
-    const col2 = P(env, m, 'fx_gradient_color', '#FF000000'),
+    const c2 = css(P(env, m, 'fx_gradient_color', '#FF000000')),
       c1 = css(col);
     const gw = Math.max(0.001, P(env, m, 'fx_gradient_width', 100) / 100),
       go = P(env, m, 'fx_gradient_offset', 50) / 100;
@@ -567,19 +463,23 @@
     if (g === 'HORIZONTAL') gr = ctx.createLinearGradient(0, 0, w, 0);
     else if (g === 'VERTICAL') gr = ctx.createLinearGradient(0, 0, 0, h);
     else if (g === 'RADIAL' || g === 'SWEEP') {
-      // KLWP (view/q.p): centre = item centre + (centre X / Y - 50)% of the item's size. A sweep starts at the
-      // bottom (Android's SweepGradient turned 90 degrees). A radial reaches the farthest corner, or for a circle
-      // shape the circle's edge (distance to its centre + width / 1.98).
-      const cx = (w * P(env, m, 'fx_gradient_offset_x', 50)) / 100,
-        cy = (h * P(env, m, 'fx_gradient_offset_y', 50)) / 100;
+      // the centre moves against the X / Y centre offsets, the radius is the item's longer side, and the colour
+      // change sits at "offset" along it and is "width" wide, like the linear ones (measured on phone screenshots)
+      const cx = w * (0.5 - P(env, m, 'fx_gradient_offset_x', 0) / 100),
+        cy = h * (0.5 - P(env, m, 'fx_gradient_offset_y', 0) / 100);
       if (g === 'SWEEP' && ctx.createConicGradient) {
-        return premulStops(ctx.createConicGradient(Math.PI / 2, cx, cy), a, b, col, col2);
+        gr = ctx.createConicGradient(0, cx, cy);
+        gr.addColorStop(0, c1);
+        gr.addColorStop(a, c1);
+        gr.addColorStop(Math.max(a, b), c2);
+        gr.addColorStop(1, c2);
+        return gr;
       }
-      const circle = m.internal_type === 'ShapeModule' && P(env, m, 'shape_type', 'SQUARE') === 'CIRCLE',
-        R = circle
-          ? Math.hypot(cx - w / 2, cy - w / 2) + w / 1.98
-          : Math.max(Math.hypot(cx, cy), Math.hypot(w - cx, cy), Math.hypot(cx, h - cy), Math.hypot(w - cx, h - cy));
-      return premulStops(ctx.createRadialGradient(cx, cy, 0, cx, cy, Math.max(1, R)), a, b, col, col2);
+      gr = ctx.createRadialGradient(cx, cy, 0, cx, cy, Math.max(w, h));
+      gr.addColorStop(0, c1);
+      gr.addColorStop(a, c1);
+      gr.addColorStop(Math.max(a, b), c2);
+      return gr;
     } else if (g === 'BITMAP') {
       const img = env.state.assets.image(P(env, m, 'fx_gradient_bitmap', ''));
       if (!img) return c1;
@@ -600,9 +500,13 @@
         );
       return pat;
     } else return c1;
-    return premulStops(gr, a, b, col, col2);
+    if (a > 0) gr.addColorStop(0, c1);
+    gr.addColorStop(a, c1);
+    gr.addColorStop(b, c2);
+    if (b < 1) gr.addColorStop(1, c2);
+    return gr;
   }
-  const TUNE = { textPad: 1, shadowRoom: 1, bgBlur: 0.34 };
+  const TUNE = { textPad: 1, blurK: 0.115, shadowRoom: 1, bgBlur: 0.34, hueK: 1.8 };
   // "Outer" shadow, as Android's outer blur draws it: a blurred copy of the item in the shadow colour that is only
   // visible outside the item's own outline, at the shadow colour's full strength however see-through the fill is.
   // Device-space box of a local rectangle, grown by a margin and kept to the canvas (plus "over" pixels beyond its edges).
@@ -658,18 +562,15 @@
   }
   function shadowPass(env, ctx, m, paintColor, draw, w, h, full) {
     if (env.rt.maskMode || P(env, m, 'fx_shadow', 'NONE') !== 'OUTER') return;
-    // KLWP (PaintModule): the shadow colour is fx_shadow_color, black when unset
+    // with no shadow colour chosen the shadow takes the item's own colour
     const sc = Object.assign(
       {},
-      F.parseColor(P(env, m, 'fx_shadow_color', '#FF000000')) || { a: 255, r: 0, g: 0, b: 0 }
+      F.parseColor(P(env, m, 'fx_shadow_color', paintColor)) || { a: 255, r: 0, g: 0, b: 0 }
     );
-    // Android's shadow pass repaints the item with its paint's colour swapped for the shadow colour; a fully opaque
-    // shadow colour keeps the paint's own alpha. With a gradient or bitmap texture the paint has a shader, so only
-    // the shadow colour's alpha counts and the shadow is the texture itself (KLWP leaves that paint's colour opaque).
-    const textured = P(env, m, 'fx_gradient', 'NONE') !== 'NONE';
+    // as on Android: a fully opaque shadow colour takes on the see-through-ness of the item's own colour
     if (sc.a >= 255) {
       const pc = F.parseColor(paintColor);
-      sc.a = textured ? 255 : pc ? pc.a : 255;
+      if (pc) sc.a = pc.a;
     }
     if (sc.a <= 0) return;
     const t = ctx.getTransform(),
@@ -677,14 +578,9 @@
     const dir = P(env, m, 'fx_shadow_direction', 0),
       dist = P(env, m, 'fx_shadow_distance', 0),
       blur = P(env, m, 'fx_shadow_blur', 5);
-    // KLWP (view/q.t): Paint.setShadowLayer(max(1, blur / 4), dist * cos(360 - dir), dist * sin(360 - dir), colour).
-    // The blur radius is in device pixels (not Kustom points) and Android turns a radius into a Gaussian
-    // sigma of 0.57735 * radius + 0.5. One Kustom point is min(screen width, height) / 720 device pixels.
-    const devPerKp = (Math.min(env.view.pxW || 1080, env.view.pxH || 1920) / 720) * (env.view.uiScale || 1),
-      sigmaDev = 0.57735 * Math.max(1, blur * 0.25) + 0.5;
     const dx = Math.cos(dir * D2R) * dist * k,
       dy = -Math.sin(dir * D2R) * dist * k,
-      sigma = (sigmaDev / devPerKp) * k;
+      sigma = (blur * TUNE.blurK + 0.5) * k; // measured against phone screenshots
     const reach = Math.ceil(3 * sigma + Math.abs(dx) + Math.abs(dy) + 12 * k),
       box = devBox(ctx, 0, 0, w, h, reach, reach);
     if (!box) return;
@@ -699,20 +595,18 @@
     o.drawImage(sil, 0, 0, box.w, box.h, dx, dy, box.w, box.h);
     o.filter = 'none';
     o.globalCompositeOperation = 'source-in';
-    if (textured) {
-      // the texture, moved with the shadow, seen through the blurred outline
-      o.setTransform(new DOMMatrix([1, 0, 0, 1, dx, dy]).multiply(a.getTransform()));
-      o.globalAlpha = sc.a / 255;
-      o.fillStyle = fillStyle(env, o, m, w, h);
-      const r = reach / k;
-      o.fillRect(-r, -r, w + 2 * r, h + 2 * r);
-      o.setTransform(1, 0, 0, 1, 0, 0);
-      o.globalAlpha = 1;
-    } else {
-      o.fillStyle = 'rgba(' + sc.r + ',' + sc.g + ',' + sc.b + ',' + (sc.a / 255).toFixed(4) + ')';
-      o.fillRect(0, 0, box.w, box.h);
+    o.fillStyle = 'rgba(' + sc.r + ',' + sc.g + ',' + sc.b + ',' + (sc.a / 255).toFixed(4) + ')';
+    o.fillRect(0, 0, box.w, box.h);
+    // nothing of the shadow shows through the item itself (its outline is widened a touch so no fringe is left at the edge)
+    // text, icon glyphs and outlines keep the whole soft copy; a filled shape's shadow is hollow where the shape's
+    // shifted copy sits (widened a touch so no fringe is left at the edge)
+    if (!full) {
+      o.globalCompositeOperation = 'destination-out';
+      o.drawImage(sil, 0, 0, box.w, box.h, dx, dy, box.w, box.h);
+      o.filter = 'blur(' + Math.max(0.6, 0.5 * k).toFixed(2) + 'px)';
+      for (let i = 0; i < 3; i++) o.drawImage(sil, 0, 0, box.w, box.h, dx, dy, box.w, box.h);
+      o.filter = 'none';
     }
-    // Android draws the whole blurred copy underneath the item (KLWP's shape view is a plain drawPath with that paint)
     env.rt.release(sil);
     blit(env, ctx, off, box, true);
   }
@@ -1028,195 +922,56 @@
     };
   }
   // "Morphing Text": one line; Ratio flattens the letters, Skew slants them, Spacing spreads them, Justify fills Width.
-  // "Morphing Text", as KLWP draws it (render.view.f): every letter is its own glyph outline at the origin, squashed by
-  // the ratio (> 0 flattens, < 0 narrows) and slanted by the skew about its baseline, then either laid along a line
-  // by its own advance plus the spacing, or bent onto an arc by the angle. The item's box is the exact ink outline
-  // of all letters together (and the starting point 0,0); the letters are drawn shifted so the ink starts at the box.
-  const skewInk = new Map();
   function measureCurved(env, ctx, m) {
     const size = P(env, m, 'text_size', 20),
-      ratio = P(env, m, 'text_ratio', 0),
-      skew = P(env, m, 'text_skew', 0),
-      angle = Math.trunc(P(env, m, 'text_angle', 0)),
-      justify = P(env, m, 'text_mode', 'AUTO') === 'JUSTIFY',
-      textW = P(env, m, 'text_width', 200);
-    const txt = textValue(env, m).replace(/\[[^\]]*\]/g, ''),
-      chars = [...txt],
-      n = chars.length;
-    const font = fontOf(env, m, size);
-    ctx.font = font;
-    // the letter transform H: scale about the origin, then skew x by -skew / 100 per unit of y
-    const sx = ratio < 0 ? (ratio + 100) / 100 : 1,
-      sy = ratio > 0 ? (100 - ratio) / 100 : 1,
-      kx = -skew / 100;
-    const H = [sx, 0, kx * sy, sy, 0, 0];
-    // advances as Paint.getTextWidths gives them: measured in the context of the whole line (kerning included), with a
-    // ligature's whole width given to its first letter and none to the rest (each letter is still drawn on its own)
-    const pre = [0];
-    for (let i = 0; i < n; i++) pre.push(ctx.measureText(chars.slice(0, i + 1).join('')).width);
-    const adv = chars.map((ch, i) => pre[i + 1] - pre[i]);
-    for (let i = 0; i < n; i++)
-      for (const lig of ['ffi', 'ffl', 'ff', 'fi', 'fl']) {
-        if (chars.slice(i, i + lig.length).join('') !== lig) continue;
-        const iso = [...lig].reduce((a, c) => a + ctx.measureText(c).width, 0),
-          joined = ctx.measureText(lig).width;
-        if (iso - joined > size * 0.005) {
-          let tot = 0;
-          for (let j = i; j < i + lig.length; j++) tot += adv[j];
-          adv[i] = tot;
-          for (let j = i + 1; j < i + lig.length; j++) adv[j] = 0;
-          i += lig.length - 1;
-        }
-        break;
-      }
-    // per letter: its ink box after H
-    const gl = chars.map((ch, i) => {
-      const mt = ctx.measureText(ch);
-      const g = { ch, adv: adv[i], ink: null };
-      const l = -mt.actualBoundingBoxLeft,
-        r = mt.actualBoundingBoxRight,
-        t = -mt.actualBoundingBoxAscent,
-        b = mt.actualBoundingBoxDescent;
-      if (r - l <= 0 || b - t <= 0) return g; // a space has no outline
-      if (!kx) g.ink = [l * sx, t * sy, r * sx, b * sy];
-      else {
-        // a slanted outline is narrower than its slanted box: find its ink by drawing it once (cached)
-        const key = font + '|' + ch + '|' + sx + '|' + sy + '|' + kx;
-        let ink = skewInk.get(key);
-        if (!ink) {
-          const q = 4,
-            pad = Math.ceil((b - t) * Math.abs(kx) + 4),
-            W = Math.ceil((r - l) * sx * q + 2 * pad * q),
-            Ht = Math.ceil((b - t) * sy * q + 8);
-          const cv = document.createElement('canvas');
-          cv.width = Math.max(1, Math.min(4096, W));
-          cv.height = Math.max(1, Math.min(4096, Ht));
-          const c = cv.getContext('2d');
-          const ox = (pad - l * sx) * q,
-            oy = (-t * sy + 1) * q;
-          c.setTransform(q * sx, 0, q * kx * sy, q * sy, ox, oy);
-          c.font = font;
-          c.fillText(ch, 0, 0);
-          const d = c.getImageData(0, 0, cv.width, cv.height).data;
-          let x0 = cv.width,
-            x1 = -1;
-          for (let y = 0; y < cv.height; y++)
-            for (let x = 0; x < cv.width; x++)
-              if (d[(y * cv.width + x) * 4 + 3] > 8) {
-                if (x < x0) x0 = x;
-                if (x > x1) x1 = x;
-              }
-          ink = x1 < 0 ? null : [(x0 - ox) / q, t * sy, (x1 + 1 - ox) / q, b * sy];
-          if (skewInk.size > 4000) skewInk.clear();
-          skewInk.set(key, ink);
-        }
-        g.ink = ink;
-      }
-      return g;
+      ratio = P(env, m, 'text_ratio', 0) / 100,
+      skew = P(env, m, 'text_skew', 0) / 200;
+    const txt = textValue(env, m)
+        .replace(/\[[^\]]*\]/g, '')
+        .trim(),
+      chars = [...txt];
+    ctx.font = fontOf(env, m, size);
+    const FM = fontMetrics(env, m),
+      asc = FM.top * size,
+      desc = FM.desc * size;
+    let spacing = P(env, m, 'text_spacing', 0),
+      natural = 0;
+    const ws = chars.map(ch => {
+      const w = ctx.measureText(ch).width;
+      natural += w;
+      return w;
     });
-    // ink box of the whole string as one line (Paint.getTextBounds), used by justify and by the arc
-    const all = ctx.measureText(txt),
-      hbW = all.actualBoundingBoxLeft + all.actualBoundingBoxRight,
-      hbH = all.actualBoundingBoxAscent + all.actualBoundingBoxDescent;
-    const s = justify ? (textW - hbW) / Math.max(1, n) : P(env, m, 'text_spacing', 0);
-    // placement of each letter (render.view.f.G)
-    let before = 0;
-    gl.forEach((g, i) => {
-      const x = before + i * s;
-      before += g.adv;
-      if (!angle) {
-        g.M = [H[0], H[1], H[2], H[3], x, 0];
-        return;
-      }
-      const a = Math.abs(angle),
-        L = justify ? textW : hbW + s * n,
-        ang = (a / L) * x - Math.floor(a / 2);
-      let r = ((360 / a) * L) / 6.28319;
-      if (angle < 0) r = -r - hbH / 2;
-      const th = (angle > 0 ? ang - 90 : -ang + 90) * D2R,
-        px = Math.abs(r) * Math.cos(th),
-        py = r + Math.abs(r) * Math.sin(th),
-        rot = (angle > 0 ? ang : -ang) * D2R,
-        c = Math.cos(rot),
-        sn = Math.sin(rot);
-      // translate(px, py) * rotate(rot) * H
-      g.M = [c * H[0] - sn * H[1], sn * H[0] + c * H[1], c * H[2] - sn * H[3], sn * H[2] + c * H[3], px, py];
-    });
-    // bounds of everything drawn (the path's starting move is merged into the first letter's, so it does not count)
-    let x0 = Infinity,
-      y0 = Infinity,
-      x1 = -Infinity,
-      y1 = -Infinity;
-    gl.forEach(g => {
-      if (!g.ink) return;
-      const M = g.M,
-        [l, t, r, b] = g.ink;
-      // ink is already in H space; map it with the placement only (M without H)
-      const det = H[0] * H[3] - H[1] * H[2] || 1,
-        inv = [H[3] / det, -H[1] / det, -H[2] / det, H[0] / det];
-      const P2 = [
-        M[0] * inv[0] + M[2] * inv[1],
-        M[1] * inv[0] + M[3] * inv[1],
-        M[0] * inv[2] + M[2] * inv[3],
-        M[1] * inv[2] + M[3] * inv[3]
-      ];
-      [
-        [l, t],
-        [r, t],
-        [l, b],
-        [r, b]
-      ].forEach(([x, y]) => {
-        const X = P2[0] * x + P2[2] * y + M[4],
-          Y = P2[1] * x + P2[3] * y + M[5];
-        if (X < x0) x0 = X;
-        if (X > x1) x1 = X;
-        if (Y < y0) y0 = Y;
-        if (Y > y1) y1 = Y;
-      });
-    });
-    if (x0 === Infinity) x0 = y0 = x1 = y1 = 0;
-    const stroke = P(env, m, 'paint_style', 'FILL') === 'STROKE',
-      sw = stroke ? strokeW(env, m) : 0;
-    const w = x1 - x0 + sw,
-      h = y1 - y0 + sw;
-    const glyphs = c => {
-      c.font = font;
-      c.textBaseline = 'alphabetic';
-      c.textAlign = 'left';
-      c.lineJoin = 'round';
-      if (stroke) c.lineWidth = sw;
-      gl.forEach(g => {
-        if (!g.ink) return;
-        c.save();
-        c.translate(sw / 2 - x0, sw / 2 - y0);
-        c.transform(g.M[0], g.M[1], g.M[2], g.M[3], g.M[4], g.M[5]);
-        stroke ? c.strokeText(g.ch, 0, 0) : c.fillText(g.ch, 0, 0);
-        c.restore();
-      });
-    };
-    // a gradient or texture belongs to the item's box, not to each letter's own transform
-    const paint = c => {
-      const style = stroke ? c.strokeStyle : c.fillStyle;
-      if (typeof style === 'string') return glyphs(c);
-      const box = devBox(c, 0, 0, w, h, 2, 0);
-      if (!box) return;
-      const L = subLayer(env, c, box),
-        o = L.getContext('2d');
-      o.fillStyle = o.strokeStyle = '#000';
-      glyphs(o);
-      o.globalCompositeOperation = 'source-in';
-      o.fillStyle = style;
-      o.fillRect(-2, -2, w + 4, h + 4);
-      blit(env, c, L, box, true);
-    };
+    const tw = P(env, m, 'text_width', 0);
+    if (P(env, m, 'text_mode', 'AUTO') === 'JUSTIFY' && tw > 0 && chars.length > 1)
+      spacing = (tw - natural) / (chars.length - 1);
+    const sy = ratio > 0 ? Math.min(1, Math.sqrt(ratio)) : 1; // how much the letters are flattened
+    const w = Math.max(0, natural + spacing * Math.max(0, chars.length - 1)),
+      h = ratio > 0 ? size * ratio * 1.16 : asc + desc;
     return {
-      w: Math.max(0, w),
-      h: Math.max(0, h),
+      w,
+      h,
       draw(ctx) {
+        const stroke = P(env, m, 'paint_style', 'FILL') === 'STROKE';
+        const paint = c => {
+          c.save();
+          c.translate(0, (h - (asc + desc) * sy) / 2 + asc * sy);
+          c.transform(1, 0, -skew * sy, sy, 0, 0); // baseline, slant, flatten
+          c.font = fontOf(env, m, size);
+          c.textBaseline = 'alphabetic';
+          c.textAlign = 'left';
+          c.lineJoin = 'round';
+          if (stroke) c.lineWidth = strokeW(env, m);
+          let x = 0;
+          chars.forEach((ch, i) => {
+            stroke ? c.strokeText(ch, x, 0) : c.fillText(ch, x, 0);
+            x += ws[i] + spacing;
+          });
+          c.restore();
+        };
         if (env.rt.maskMode) {
           ctx.fillStyle = '#000';
           ctx.strokeStyle = '#000';
-          return glyphs(ctx);
+          return paint(ctx);
         }
         shadowPass(env, ctx, m, P(env, m, 'paint_color', '#FFFFFFFF'), paint, w, h, true);
         const fs = fillStyle(env, ctx, m, w, h);
@@ -1227,155 +982,70 @@
       }
     };
   }
-
-  // a PATH shape: SVG path data, stretched to width x height (Auto) or fitted inside it keeping its shape (Center fit)
-  function svgShape(d, w, h, mode) {
-    d = String(d || '').trim();
-    if (!d) return new Path2D();
-    if (!/^[Mm]/.test(d)) d = 'M0,0 ' + d;
-    const nums = (d.match(/-?\d*\.?\d+(?:e-?\d+)?/gi) || []).map(Number);
-    let x0 = Infinity,
-      y0 = Infinity,
-      x1 = -Infinity,
-      y1 = -Infinity;
-    for (let i = 0; i + 1 < nums.length; i += 2) {
-      x0 = Math.min(x0, nums[i]);
-      x1 = Math.max(x1, nums[i]);
-      y0 = Math.min(y0, nums[i + 1]);
-      y1 = Math.max(y1, nums[i + 1]);
-    }
-    const bw = x1 - x0 || 1,
-      bh = y1 - y0 || 1;
-    let kx = w / bw,
-      ky = h / bh,
-      ox = 0,
-      oy = 0;
-    if (mode === 'CENTER_FIT') {
-      kx = ky = Math.min(kx, ky);
-      ox = (w - bw * kx) / 2;
-      oy = (h - bh * ky) / 2;
-    }
-    const out = new Path2D();
-    try {
-      out.addPath(new Path2D(d), new DOMMatrix([kx, 0, 0, ky, ox - x0 * kx, oy - y0 * ky]));
-    } catch (e) {
-      /* bad path data draws nothing */
-    }
-    return out;
-  }
   function measureShape(env, ctx, m) {
     const type = P(env, m, 'shape_type', 'SQUARE'),
       w = P(env, m, 'shape_width', 100);
     let h = P(env, m, 'shape_height', 100);
     if (SQUARE[type]) h = w;
-    const path =
-      type === 'PATH'
-        ? svgShape(P(env, m, 'shape_path', ''), w, h, P(env, m, 'shape_path_scale', 'AUTO'))
-        : shapePath(
-            type,
-            w,
-            type === 'ARC' ? P(env, m, 'shape_height', 100) : h,
-            P(env, m, 'shape_corners', 0),
-            P(env, m, 'shape_angle', 0)
-          );
+    const path = shapePath(
+      type,
+      w,
+      type === 'ARC' ? P(env, m, 'shape_height', 100) : h,
+      P(env, m, 'shape_corners', 0),
+      P(env, m, 'shape_angle', 0)
+    );
     return {
       w,
       h,
       path,
       draw(ctx) {
-        // KLWP's view is the shape plus its stroke and Android clips it to that size: a shape with no width or
-        // height (and no stroke to give it some) draws nothing at all, not even the 1 px hairline of a 0 stroke
-        const sw = P(env, m, 'paint_style', 'FILL') === 'STROKE' ? Math.max(0, P(env, m, 'paint_stroke', 5)) : 0;
-        if (w + sw <= 0 || h + sw <= 0) return;
         paintPath(env, ctx, m, w, h, path);
       }
     };
   }
-  // Image colour filters as KLWP builds them (options/BitmapColorFilter.apply + utils/p, then "dim" as a darken on top).
-  // The amount is a 0..100 slider; COLORIZE, SEPIA, BW and INVERT ignore it.
   function bitmapFilter(env, m, pre) {
+    const f = [];
     const blur = P(env, m, pre + 'blur', 0),
       dim = P(env, m, pre + 'dim', 0),
       flt = P(env, m, pre + 'filter', 'NONE'),
-      amt = P(env, m, pre + 'filter_amount', 0) / 100;
-    const f = [];
-    let tint = null,
-      add = 0;
+      amt = P(env, m, pre + 'filter_amount', 100);
+    if (blur > 0) f.push('blur(' + (blur / 6).toFixed(2) + 'px)');
+    if (dim > 0) f.push('brightness(' + Math.max(0, 1 - dim / 100).toFixed(3) + ')');
     switch (flt) {
-      case 'BW':
-        f.push('grayscale(1)');
-        break;
-      case 'SEPIA': // saturation 0.95, then red/green/blue scaled by 1 / 0.95 / 0.82
-        f.push('saturate(0.95)');
-        tint = { r: 255, g: 242, b: 209, a: 255 };
-        break;
       case 'DESATURATE':
-        f.push('saturate(' + Math.max(0, 1 - amt).toFixed(3) + ')');
+        f.push('grayscale(' + amt + '%)');
         break;
-      case 'INVERT':
-        f.push('invert(1)');
+      case 'BW':
+        f.push('grayscale(100%)');
         break;
-      case 'COLORIZE': // grey, then multiplied by the colour (its alpha included)
-        f.push('grayscale(1)');
-        tint = F.parseColor(P(env, m, pre + 'filter_color', '#FFFF0000')) || { r: 255, g: 0, b: 0, a: 255 };
+      case 'SEPIA':
+        f.push('sepia(' + amt + '%)');
         break;
-      case 'HUE': // a rotation of pi * amount radians
-        f.push('hue-rotate(' + (amt * 180).toFixed(2) + 'deg)');
-        break;
-      case 'CONTRAST':
-        f.push('contrast(' + (1 + amt).toFixed(3) + ')');
-        break;
-      case 'BRIGHTEN': // adds amount * 255 to every channel
-        add = amt;
+      case 'BRIGHTEN':
+        f.push('brightness(' + (1 + amt / 100) + ')');
         break;
       case 'DARKEN':
-        f.push('brightness(' + Math.max(0, 1 - amt).toFixed(3) + ')');
+        f.push('brightness(' + Math.max(0, 1 - amt / 100) + ')');
+        break;
+      case 'CONTRAST':
+        f.push('contrast(' + (1 + amt / 100) + ')');
+        break;
+      case 'SATURATE':
+        f.push('saturate(' + (1 + amt / 100) + ')');
+        break;
+      case 'HUE':
+        f.push('hue-rotate(' + (amt * TUNE.hueK).toFixed(1) + 'deg)');
         break;
     }
-    const blurCss = blur > 0 ? 'blur(' + (blur / 6).toFixed(2) + 'px)' : '';
     return {
-      blurCss,
-      colorCss: f.join(' '),
-      css: [blurCss].concat(f).join(' ').trim() || 'none',
-      tint,
-      add,
-      dim: Math.max(0, Math.min(1, dim / 100))
+      css: f.length ? f.join(' ') : 'none',
+      colorize: flt === 'COLORIZE' ? { color: P(env, m, pre + 'filter_color', '#FFFFFFFF'), amt: amt / 100 } : null
     };
-  }
-  // the parts of a filter a CSS filter cannot do (a colour multiply, an addition, the darken that follows), applied to
-  // what is already drawn on c; "cut" redraws the outline that the result must keep
-  function filterExtras(c, fx, wd, ht, cut) {
-    if (!fx.tint && !fx.add && !fx.dim) return;
-    c.save();
-    c.setTransform(1, 0, 0, 1, 0, 0);
-    c.filter = 'none';
-    if (fx.tint) {
-      c.globalCompositeOperation = 'multiply';
-      c.fillStyle = 'rgb(' + fx.tint.r + ',' + fx.tint.g + ',' + fx.tint.b + ')';
-      c.fillRect(0, 0, wd, ht);
-    }
-    if (fx.add) {
-      const v = Math.round(fx.add * 255);
-      c.globalCompositeOperation = 'lighter';
-      c.fillStyle = 'rgb(' + v + ',' + v + ',' + v + ')';
-      c.fillRect(0, 0, wd, ht);
-    }
-    if (fx.dim) {
-      const v = Math.round((1 - fx.dim) * 255);
-      c.globalCompositeOperation = 'multiply';
-      c.fillStyle = 'rgb(' + v + ',' + v + ',' + v + ')';
-      c.fillRect(0, 0, wd, ht);
-    }
-    c.restore();
-    c.save();
-    c.globalCompositeOperation = 'destination-in';
-    cut(c);
-    c.restore();
   }
   function drawImageFx(env, ctx, img, x, y, w, h, fx, alpha) {
     ctx.save();
-    ctx.globalAlpha *= alpha * (fx.tint ? fx.tint.a / 255 : 1);
-    if (fx.tint || fx.add) {
+    ctx.globalAlpha *= alpha;
+    if (fx.colorize) {
       const t = ctx.getTransform(),
         k = Math.sqrt(Math.abs(t.a * t.d - t.b * t.c)) || 1;
       const cw = Math.max(1, Math.min(2048, Math.ceil(w * k))),
@@ -1385,24 +1055,25 @@
       o.filter = fx.css;
       o.drawImage(img, 0, 0, cw, ch);
       o.filter = 'none';
-      filterExtras(o, fx, cw, ch, c => {
-        c.filter = fx.blurCss || 'none';
-        c.drawImage(img, 0, 0, cw, ch);
-        c.filter = 'none';
-      });
+      o.globalAlpha = fx.colorize.amt;
+      o.filter = (fx.css === 'none' ? '' : fx.css + ' ') + 'grayscale(100%)';
+      o.drawImage(img, 0, 0, cw, ch);
+      o.filter = 'none';
+      o.globalCompositeOperation = 'multiply';
+      o.fillStyle = css(fx.colorize.color);
+      o.fillRect(0, 0, cw, ch);
+      o.globalCompositeOperation = 'destination-in';
+      o.globalAlpha = 1;
+      o.drawImage(img, 0, 0, cw, ch);
+      o.globalCompositeOperation = 'source-over';
       ctx.drawImage(off, x, y, w, h);
     } else {
-      const css = [fx.css === 'none' ? '' : fx.css, fx.dim ? 'brightness(' + (1 - fx.dim).toFixed(3) + ')' : '']
-        .join(' ')
-        .trim();
-      if (css) ctx.filter = css;
+      if (fx.css !== 'none') ctx.filter = fx.css;
       ctx.drawImage(img, x, y, w, h);
     }
     ctx.restore();
   }
-  // KLWP draws nothing for an image or icon it cannot find, so neither does the preview
-  function placeholder() {}
-  function placeholderBox(ctx, w, h, label) {
+  function placeholder(ctx, w, h, label) {
     ctx.save();
     ctx.fillStyle = 'rgba(255,255,255,.08)';
     ctx.strokeStyle = 'rgba(255,255,255,.45)';
@@ -1420,85 +1091,27 @@
     }
     ctx.restore();
   }
-  // the middle part of a picture, as its own canvas (Center crop)
-  function cropped(img, sx, sy, sw, sh) {
-    const c = document.createElement('canvas');
-    c.width = Math.max(1, Math.round(sw));
-    c.height = Math.max(1, Math.round(sh));
-    c.getContext('2d').drawImage(img, sx, sy, sw, sh, 0, 0, c.width, c.height);
-    return c;
-  }
   function measureBitmap(env, ctx, m) {
     const movie = m.internal_type === 'MovieModule';
     const uri = P(env, m, movie ? 'bitmap_movie_uri' : 'bitmap_bitmap', '');
-    // an Animated Image (MovieModule) plays its GIF in a loop unless its mode is "Paused"
-    const playing = movie && P(env, m, 'bitmap_movie_mode', 'LOOP') !== 'STOP';
-    let img = env.state.assets.image(uri, playing ? (env.rt.time || 0) * 1000 : undefined);
-    if (playing && env.state.assets.animated && env.state.assets.animated(uri)) env.rt.animating = true;
-    // Size (bitmap_scale_mode): Fit width keeps the width and follows the picture's shape, Fit height the other way
-    // round, Fit center fits it inside a width x height box, Center crop fills that box and cuts off the rest
-    const mode = movie ? 'FIT_WIDTH' : P(env, m, 'bitmap_scale_mode', 'FIT_WIDTH'),
-      ar = img ? img.height / img.width : 1;
-    let w = P(env, m, 'bitmap_width', 100),
-      h = w * ar,
-      sx = 0,
-      sy = 0,
-      sw = img ? img.width : 1,
-      sh = img ? img.height : 1,
-      dx = 0,
-      dy = 0,
-      dw = w,
-      dh = h;
-    if (mode === 'FIT_HEIGHT') {
-      h = P(env, m, 'bitmap_height', 100);
-      w = h / ar;
-      dw = w;
-      dh = h;
-    } else if (mode === 'CENTER_FIT' || mode === 'CENTER_CROP') {
-      h = P(env, m, 'bitmap_height', 100);
-      const k = mode === 'CENTER_FIT' ? Math.min(w / sw, h / sh) : Math.max(w / sw, h / sh);
-      if (mode === 'CENTER_FIT') {
-        dw = sw * k;
-        dh = sh * k;
-        dx = (w - dw) / 2;
-        dy = (h - dh) / 2;
-      } else {
-        dw = w;
-        dh = h;
-        sw = w / k;
-        sh = h / k;
-        sx = ((img ? img.width : 1) - sw) / 2;
-        sy = ((img ? img.height : 1) - sh) / 2;
-      }
-    }
-    const crop = mode === 'CENTER_CROP' && img;
+    const img = env.state.assets.image(uri);
+    const w = P(env, m, 'bitmap_width', 100);
+    const ar = img ? img.height / img.width : 1,
+      h = w * ar;
     return {
       w,
       h,
       draw(ctx) {
-        if (!img || w <= 0 || h <= 0) return;
-        const pic = crop ? cropped(img, sx, sy, sw, sh) : img;
-        shadowPass(env, ctx, m, '#FF000000', c => c.drawImage(pic, dx, dy, dw, dh), w, h);
-        drawImageFx(
-          env,
-          ctx,
-          pic,
-          dx,
-          dy,
-          dw,
-          dh,
-          bitmapFilter(env, m, 'bitmap_'),
-          P(env, m, 'bitmap_alpha', 100) / 100
-        );
+        if (!img) return placeholder(ctx, w, h, uri ? 'image' : 'no image');
+        shadowPass(env, ctx, m, '#FF000000', c => c.drawImage(img, 0, 0, w, h), w, h);
+        drawImageFx(env, ctx, img, 0, 0, w, h, bitmapFilter(env, m, 'bitmap_'), P(env, m, 'bitmap_alpha', 100) / 100);
       }
     };
   }
   function measureIcon(env, ctx, m) {
     const size = P(env, m, 'icon_size', 80),
-      setUri = String(P(env, m, 'icon_set', '') || '').trim(),
-      name = String(P(env, m, 'icon_icon', '')).trim(); // KLWP trims the name
-    if (/^iconify:\/\//.test(setUri) || name.indexOf('#') > 0) return measureSvgIcon(env, m, size, setUri, name);
-    const set = env.state.assets.iconSet(setUri);
+      set = env.state.assets.iconSet(P(env, m, 'icon_set', '')),
+      name = String(P(env, m, 'icon_icon', ''));
     const ic = set && (set[name] || set[name.toLowerCase()]);
     const fam = set && set._font && set._font();
     return {
@@ -1536,41 +1149,6 @@
           c.strokeStyle = c.fillStyle = solid ? '#000' : fs;
           paint(c);
         });
-      }
-    };
-  }
-  // an SVG icon (Iconify): the picture is used as a mask and painted with the item's colour, texture and shadow
-  function measureSvgIcon(env, m, size, setUri, name) {
-    const img = env.state.assets.svgIcon ? env.state.assets.svgIcon(setUri, name) : null;
-    return {
-      w: size,
-      h: size,
-      draw(ctx) {
-        if (!img) return;
-        const k = Math.sqrt(Math.abs(ctx.getTransform().a * ctx.getTransform().d)) || 1,
-          px = Math.max(1, Math.ceil(size * k));
-        const mask = document.createElement('canvas');
-        mask.width = mask.height = px;
-        mask.getContext('2d').drawImage(img, 0, 0, px, px);
-        if (env.rt.maskMode) {
-          ctx.drawImage(mask, 0, 0, size, size);
-          return;
-        }
-        const paint = (c, style) => {
-          const t = document.createElement('canvas');
-          t.width = t.height = px;
-          const o = t.getContext('2d');
-          o.drawImage(mask, 0, 0);
-          o.globalCompositeOperation = 'source-in';
-          o.setTransform(px / size, 0, 0, px / size, 0, 0);
-          o.fillStyle = style;
-          o.fillRect(0, 0, size, size);
-          c.drawImage(t, 0, 0, size, size);
-        };
-        const col = P(env, m, 'paint_color', '#FFFFFFFF');
-        shadowPass(env, ctx, m, col, c => paint(c, c.fillStyle), size, size, true);
-        const fs = fillStyle(env, ctx, m, size, size);
-        blend(env, ctx, m, size, size, (c, solid) => paint(c, solid ? '#000' : fs));
       }
     };
   }
@@ -1671,9 +1249,8 @@
     node.pr = P(env, m, 'position_padding_right', 0);
     node.pb = P(env, m, 'position_padding_bottom', 0);
     node.anchor = P(env, m, 'position_anchor', parentIsRoot ? 'TOP' : 'CENTER');
-    // KLWP only applies X/Y offsets to items directly on the root; inside groups items are placed by anchor and padding
-    node.ox = parentIsRoot ? P(env, m, 'position_offset_x', 0) : 0;
-    node.oy = parentIsRoot ? P(env, m, 'position_offset_y', 0) : 0;
+    node.ox = parentIsStack ? 0 : P(env, m, 'position_offset_x', 0);
+    node.oy = parentIsStack ? 0 : P(env, m, 'position_offset_y', 0);
     const vis = visibleMode(env, m);
     node.hidden =
       vis === 'NEVER' ||
@@ -1748,9 +1325,6 @@
       node.cw = cw;
       node.ch = ch;
       node.ownLayer = t !== 'RootLayerModule' && node.kids.some(k => k.blends); // a paint mode only reaches as far as the group it is in
-      // a group's Opacity (config_alpha) fades the group as one picture, so overlapping children do not show through each other
-      node.layerAlpha = t === 'RootLayerModule' ? 1 : Math.max(0, Math.min(1, P(env, m, 'config_alpha', 100) / 100));
-      if (node.layerAlpha < 1) node.ownLayer = true;
       node.locked = isK && !items.length && !!m.internal_readonly;
       if (node.locked) {
         node.w = node.h = 120 * scale;
@@ -1789,8 +1363,8 @@
           pm !== 'SRC_OVER' &&
           (t === 'ShapeModule' || t === 'TextModule' || t === 'FontIconModule' || t === 'CurvedTextModule');
       }
-      // KLWP (view/q.t + getPadding*): an item with a shadow is padded on the side the shadow falls by
-      // distance * (1 + 0.015 * blur); stroked shapes also reserve their line width
+      // an item with a shadow reserves room for it: its box covers the item and a copy pushed twice the shadow distance,
+      // so the item itself sits on the side away from the shadow; stroked shapes also reserve their line width
       if (TUNE.shadowRoom && t !== 'ProgressModule') {
         if (t === 'ShapeModule' && P(env, m, 'paint_style', 'FILL') === 'STROKE') {
           const sw = P(env, m, 'paint_stroke', 5);
@@ -1804,15 +1378,10 @@
           const dir = P(env, m, 'fx_shadow_direction', 0),
             dx = Math.cos(dir * D2R) * dist,
             dy = -Math.sin(dir * D2R) * dist;
-          const g = 1 + 0.015 * P(env, m, 'fx_shadow_blur', 5),
-            padL = Math.max(0, -dx) * g,
-            padR = Math.max(0, dx) * g,
-            padT = Math.max(0, -dy) * g,
-            padB = Math.max(0, dy) * g;
-          node.w += padL + padR;
-          node.h += padT + padB;
-          node.ex += padL;
-          node.ey += padT;
+          node.w += 2 * Math.abs(dx);
+          node.h += 2 * Math.abs(dy);
+          if (dx < 0) node.ex -= 2 * dx;
+          if (dy < 0) node.ey -= 2 * dy;
         }
       }
     }
@@ -1913,15 +1482,12 @@
       ctx.scale(r.fx, r.fy);
       ctx.translate(-(node.bw || node.w) / 2, -(node.bh || node.h) / 2);
     }
-    // KLWP builds one matrix per item: every rotate / scale / skew is applied about its own pivot, in order
-    for (let i = 0; i < tr.ops.length; i++) {
-      const o = tr.ops[i],
-        px = o.sx !== undefined ? o.sx - node.x : node.w * o.fx,
-        py = o.sy !== undefined ? o.sy - node.y : node.h * o.fy;
+    if (tr.rot || tr.sx !== 1 || tr.sy !== 1) {
+      const px = node.w * tr.px,
+        py = node.h * tr.py;
       ctx.translate(px, py);
-      if (o.t === 'rot') ctx.rotate(o.deg * D2R);
-      else if (o.t === 'scale') ctx.scale(o.x, o.y);
-      else ctx.transform(1, o.y, o.x, 1, 0, 0);
+      ctx.rotate(tr.rot * D2R);
+      ctx.scale(tr.sx, tr.sy);
       ctx.translate(-px, -py);
     }
   }
@@ -1950,7 +1516,6 @@
       if (lb) {
         const off = subLayer(env, ctx, lb);
         drawKids(env, off.getContext('2d'), node.kids);
-        ctx.globalAlpha *= node.layerAlpha === undefined ? 1 : node.layerAlpha;
         blit(env, ctx, off, lb, true);
       } else if (!node.ownLayer || maskDraw) drawKids(env, ctx, node.kids);
       env.rt.depth--;
@@ -1971,22 +1536,29 @@
           o.globalCompositeOperation = 'source-in';
           o.globalAlpha = 1;
           {
-            const fx = bitmapFilter(env, node.m, 'fx_bitmap_');
+            const fx = bitmapFilter(env, node.m, 'fx_bitmap_'),
+              rest = fx.css === 'none' ? '' : fx.css.replace(/blur\([^)]*\)\s*/, '').trim();
             const sig = mk === 'BLURRED' ? P(env, node.m, 'fx_bitmap_blur', 0) * TUNE.bgBlur * k : 0,
               bg = bgLayer(env);
-            o.filter = fx.colorCss || 'none';
-            if (fx.tint) o.globalAlpha = fx.tint.a / 255;
+            o.filter =
+              ((fx.colorize ? 'grayscale(' + Math.round(fx.colorize.amt * 100) + '%) ' : '') + rest).trim() || 'none';
             if (sig > 0.3) {
               const bl = blurBg(env, sig);
               o.drawImage(bl.c, bl.pad, bl.pad, bl.w, bl.h, -off._ox, -off._oy, bg.width, bg.height);
             } else o.drawImage(bg, -off._ox, -off._oy);
             o.filter = 'none';
-            o.globalAlpha = 1;
-            // colour multiply / brighten / dim, then cut back to the item's outline
-            filterExtras(o, fx, off.width, off.height, c => {
-              c.setTransform(mt);
-              node.body.draw(c);
-            });
+            if (fx.colorize) {
+              // tint, then cut back to the item's outline
+              o.globalCompositeOperation = 'multiply';
+              o.globalAlpha = fx.colorize.amt;
+              o.fillStyle = css(fx.colorize.color);
+              o.fillRect(0, 0, off.width, off.height);
+              o.globalAlpha = 1;
+              o.globalCompositeOperation = 'destination-in';
+              o.setTransform(mt);
+              node.body.draw(o);
+              o.setTransform(1, 0, 0, 1, 0, 0);
+            }
             o.globalCompositeOperation = 'source-over';
           }
           blit(env, ctx, off, bb, true);
@@ -2097,8 +1669,7 @@
     const ctx = canvas.getContext('2d');
     const root = state.preset.preset_root;
     const short = Math.min(canvas.width, canvas.height);
-    // uiScale: the editor's per-theme desktop scale (1 everywhere else, which is exactly KLWP)
-    const f = (short / 720) * (view.uiScale || 1);
+    const f = short / 720;
     view.kw = canvas.width / f;
     view.kh = canvas.height / f;
     view.xscreens = (state.preset.preset_info || {}).xscreens;

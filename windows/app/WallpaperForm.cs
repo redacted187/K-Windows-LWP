@@ -97,7 +97,7 @@ namespace KlwpWallpaper
             try
             {
                 await app.SetupWeb(Web, this, false);
-                Web.CoreWebView2.Navigate(App.Origin + "/.app/player.html?wallpaper=1&mon=" + Uri.EscapeDataString(app.MonitorList()) + "&v=" + DateTime.UtcNow.Ticks);
+                Web.CoreWebView2.Navigate(App.Origin + "/.app/player.html?wallpaper=1&v=" + DateTime.UtcNow.Ticks);
             }
             catch (Exception ex)
             {
